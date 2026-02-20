@@ -1,3 +1,4 @@
+// app.js
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
@@ -6,48 +7,27 @@ const amqp = require('amqplib');
 const app = express();
 const PORT = process.env.PORT || 8082;
 
-// 1. PostgreSQL 연결 설정 [cite: 12]
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+// DATABASE_URL이 없을 경우를 대비한 폴백 처리
+const dbUrl = process.env.DATABASE_URL || `postgres://${process.env.DB_USER}:${process.env.DB_PASSWORD}@34.158.208.117:5432/msa_core_db`;
 
-// 2. RabbitMQ 연결 및 채널 생성 [cite: 138]
+const pool = new Pool({ connectionString: dbUrl });
+
 let channel;
-async function connectRabbitMQ() {
+async function connectMQ() {
   try {
-    const connection = await amqp.connect(process.env.RABBITMQ_URL);
-    channel = await connection.createChannel();
-    console.log("✅ RabbitMQ Connected");
-  } catch (error) {
-    console.error("❌ RabbitMQ Connection Failed:", error);
+    const conn = await amqp.connect(process.env.RABBITMQ_URL);
+    channel = await conn.createChannel();
+    console.log("✅ RabbitMQ 연결 성공");
+  } catch (err) {
+    console.error("❌ MQ 연결 실패 (5초 후 재시도):", err.message);
+    setTimeout(connectMQ, 5000); // 연결 실패해도 앱이 죽지 않게 재시도
   }
 }
 
 app.use(express.json());
-
-// 기본 예약 API 예시
-app.post('/reserve', async (req, res) => {
-  const { userId, productId } = req.body;
-  
-  try {
-    // DB 작업 예시
-    // await pool.query('INSERT INTO reservations...');
-    
-    // RabbitMQ 메시지 전송 (비동기 처리)
-    if (channel) {
-      const msg = JSON.stringify({ userId, productId, status: 'PENDING' });
-      channel.sendToQueue('reservation_queue', Buffer.from(msg));
-    }
-    
-    res.status(201).json({ message: "Reservation request received" });
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-app.get('/health', (req, res) => res.send('Reservation Service is Running'));
+app.get('/health', (req, res) => res.send('OK'));
 
 app.listen(PORT, () => {
-  console.log(`🚀 Reservation Service listening on port ${PORT}`);
-  connectRabbitMQ();
+  console.log(`🚀 Service running on port ${PORT}`);
+  connectMQ();
 });
