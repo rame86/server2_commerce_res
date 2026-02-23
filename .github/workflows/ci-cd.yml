@@ -2,7 +2,7 @@ name: Reservation Service CI/CD
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   build-and-deploy:
