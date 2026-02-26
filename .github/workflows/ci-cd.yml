@@ -2,11 +2,8 @@ name: Reservation Service CI/CD
 
 on:
   push:
-<<<<<<< HEAD
-    branches: [ master ] # 여기를 master로 변경
-=======
     branches: [ master ]
->>>>>>> 49ffa5f5a65653b0fcf71fca4e7285aac16a5fe0
+
 
 jobs:
   build-and-deploy:
