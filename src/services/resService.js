@@ -7,6 +7,8 @@
 const resRepository = require('../repositories/resRepository');
 const redis = require('../config/redisClient');
 const amqp = require('amqplib');
+// 💡 [핵심] 이 파일에서도 환경변수를 읽을 수 있게 최상단에 추가
+require('dotenv').config();
 /**
  * [핵심: 모든 이벤트 재고 Redis Warm-up]
  * DB의 모든 이벤트를 가져와서 Redis에 저장 (서버 시작 시 호출)
@@ -173,51 +175,67 @@ exports.makeReservation = async (resData, memberId) => {
 
 // [사용자 환불 처리 및 결제 서버 통보]
 exports.processRefund = async (reservation) => {
-    const { ticket_code, event_id, ticket_count, total_price, member_id } = reservation;
+    // 1. 필요한 데이터 추출
+    const { ticket_code, member_id, total_price } = reservation;
 
+    // 2. RabbitMQ 접속 정보 설정 (오타 수정 및 환경변수 우선순위 적용)
+    const mqUser = process.env.RABBITMQ_USER || 'guest';
+    const mqPass = process.env.RABBITMQ_PASSWORD || 'guest';
+    const mqHost = process.env.RABBITMQ_HOST || 'localhost';
+    
+    // .env에 RABBITMQ_URL이 있으면 그걸 쓰고, 없으면 조합해서 사용
+    const rabbitUrl = process.env.RABBITMQ_URL || `amqp://${mqUser}:${mqPass}@${mqHost}:5672`;
+
+    console.log("-----------------------------------------");
+    console.log("♻️ [Service 환불 시도] MQ_URL:", rabbitUrl);
+    console.log("-----------------------------------------");
+
+    if (!ticket_code) {
+        throw new Error("환불에 필요한 티켓 코드가 없습니다.");
+    }
+
+    let connection;
     try {
-        // 1. DB 상태 변경 및 재고 원복
-        await resRepository.cancelReservationAndRestoreStock(ticket_code, event_id, ticket_count);
-
-        // 2. Redis 실시간 재고 원복
-        const stockKey = `event:stock:${event_id}`;
-        await redis.incrBy(stockKey, ticket_count);
-
-        // 3. RabbitMQ를 통한 결제 서버(Spring)에 환불 요청 전송
-        const mqUser = process.env.RABBITMQ_USER || 'guest';
-        const mqPass = process.env.RABBITMQ_PASSWORD || 'guest';
-        const mqHost = process.env.RABBITMQ_HOST || 'localhost';
-        const rabbitUrl = `amqp://${mqUser}:${mqPass}@${mqHost}:5672`;
-
-        const connection = await amqp.connect(rabbitUrl);
+        // 3. RabbitMQ 연결 (여기서 오타 해결!)
+        connection = await amqp.connect(rabbitUrl);
         const channel = await connection.createChannel();
 
-        const EXCHANGE_NAME = "msa.direct.exchange";
-        const REFUND_ROUTING_KEY = "pay.refund.request"; 
+        const TARGET_QUEUE = 'pay.request.queue'; // Spring 결제 서버와 약속된 큐 이름
 
-        const refundData = {
+        // 4. 전송할 데이터 포맷팅 (Spring DTO 구조에 맞춤)
+        const refundPayload = {
+            type: "REFUND",
             orderId: ticket_code,
-            // [수정] BigInt 값을 문자열로 변환 (.toString() 추가)
-            memberId: member_id.toString(), 
-            amount: total_price.toString(),
-            type: "REFUND"
+            memberId: Number(member_id),
+            amount: Number(total_price),
+            replyRoutingKey: "res.status.update"
         };
 
-        // 핵심 주석: BigInt 직렬화 에러 방지를 위해 문자열로 변환하여 발행
-        channel.publish(
-            EXCHANGE_NAME,
-            REFUND_ROUTING_KEY,
-            Buffer.from(JSON.stringify(refundData)),
-            { persistent: true }
+        // 5. 큐 확인 및 메시지 전송
+        await channel.assertQueue(TARGET_QUEUE, { durable: true });
+        
+        const isSent = channel.sendToQueue(
+            TARGET_QUEUE,
+            Buffer.from(JSON.stringify(refundPayload)),
+            { 
+                persistent: true, // 서버 꺼져도 메시지 보존
+                contentType: 'application/json' 
+            }
         );
 
-        console.log(`✅ [환불 메시지 전송] 티켓: ${ticket_code}`);
-        
-        // 안전하게 연결 종료
-        setTimeout(() => connection.close(), 500);
+        if (isSent) {
+            console.log(`✅ [성공] Spring으로 환불 데이터 발송 완료: ${ticket_code}`);
+        }
+
+        // 6. 연결 종료 (잠시 대기 후 안전하게 닫기)
+        setTimeout(async () => {
+            await channel.close();
+            await connection.close();
+        }, 500);
 
     } catch (error) {
-        console.error("❌ 환불 처리 중 서비스 오류:", error.message);
+        // 인증 실패(403) 시 URL과 권한 다시 확인할 것
+        console.error("❌ [환불 서비스 오류] MQ 접속 실패:", error.message);
         throw error;
     }
 };

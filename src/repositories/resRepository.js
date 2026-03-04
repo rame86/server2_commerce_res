@@ -108,7 +108,7 @@ exports.createReservationWithTransaction = async (data) => {
                 ticket_count: data.ticket_count,
                 total_price: data.total_price,
                 ticket_code: data.ticket_code,
-                status: 'CONFIRMED' // DB에 들어갈 때 결정되는 고유 상태값// 예약 확정 상태로 저장
+                status: 'PENDING' // DB에 들어갈 때 결정되는 고유 상태값// 예약 확정 상태로 저장
             }
         });
 
@@ -122,19 +122,20 @@ exports.createReservationWithTransaction = async (data) => {
 exports.cancelReservationAndRestoreStock = async (ticket_code, event_id, ticket_count) => {
     return await prisma.$transaction(async (tx) => {
         // 1. 현재 예약 상태 확인 (중복 취소 방지)
-        const reservation = await tx.reservations.findUnique({
+        const reservation = await tx.reservations.findFirst({
             where: { ticket_code: ticket_code }
         });
 
-        // 예약이 없거나 이미 취소된 경우, 재고를 복구하면 안 됨
-        if (!reservation || reservation.status === 'CANCELLED') {
+        // [방어 코드] 예약 데이터가 없으면 이후 로직(update)을 타지 않게 막음
+        if (!reservation) {
             console.log(`⚠️ [Skip] 이미 취소되었거나 없는 예약입니다: ${ticket_code}`);
             return null; 
         }
 
         // 2. 예약 상태 변경
         const updatedRes = await tx.reservations.update({
-            where: { ticket_code: ticket_code },
+            // ticket_code 대신 이미 DB에서 조회해온 진짜 ID를 사용
+            where: { reservation_id: reservation.reservation_id },
             data: { status: 'REFUNDED' }
         });
 

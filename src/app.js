@@ -50,36 +50,33 @@ app.use((err, req, res, next) => {
 });
 
 // [7] 서버 실행 및 초기 데이터 로드 (Warm-up)
-const resRepository = require('./repositories/resRepository'); // Repository 불러오기
-const resService = require('./services/resService'); // Service 불러오기
+const resService = require('./services/resService');
 
-// 👇 핵심 주석: Node.js 서버가 켜질 때 RabbitMQ Consumer(직원)도 자동으로 백그라운드에서 실행됨
-require('./messaging/listener/consumer');
-
-// 👇 [추가] 핵심 주석: 결제 실패 시 보상 트랜잭션을 처리할 취소 전담 Consumer 실행
-// (주의: cancelConsumer.js 파일이 있는 실제 경로에 맞게 맞춰줘!)
+// 💡 수정: 단순히 require만 하지 말고 함수로 가져와서 나중에 실행할 것
+const startConsumer = require('./messaging/listener/consumer'); 
 const startCancelConsumer = require('./messaging/listener/cancelConsumer');
-startCancelConsumer().catch(err => console.error("❌ [Cancel Consumer Error] 실행 실패:", err));
-
-// 👇 [추가] 결제 상태 업데이트(응답 수신) Consumer 실행
-const startStatusUpdateConsumer = require('./messaging/listener/statusUpdateConsumer'); // [추가]
-startStatusUpdateConsumer().catch(err => console.error("❌ [Status Update Consumer Error] 실행 실패:", err)); // [추가]
+const startStatusUpdateConsumer = require('./messaging/listener/statusUpdateConsumer');
 
 app.listen(PORT, async () => {
     console.log(`🚀 [Reservation] Service is running on port ${PORT}`);
 
     try {
-        /**
-         * [핵심: Redis 재고 Warm-up]
-         * 하드코딩된 ID 대신, DB의 모든 이벤트를 조회하여 Redis에 동기화함.
-         */
-        await resService.warmupAllEventsToRedis();
+        // 1. RabbitMQ Consumer들을 순차적으로 실행 (환경 변수 적용 확실히 보장)
+        // consumer.js에서 startConsumer가 module.exports 되어 있어야 함!
+        await startConsumer(); 
         
+        // 나머지 컨슈머들도 여기서 실행
+        await startCancelConsumer();
+        await startStatusUpdateConsumer();
+
+        console.log("✅ [Messaging] 모든 RabbitMQ 컨슈머 연결 성공");
+
+        // 2. Redis 재고 Warm-up 실행
+        await resService.warmupAllEventsToRedis();
         console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
+
     } catch (err) {
-        console.error("❌ [Warm-up Error] 초기 재고 로드 실패:", err.message);
+        // 초기화 과정에서 에러 발생 시 로그 출력 및 예외 처리
+        console.error("❌ [Initialization Error] 초기화 실패:", err.message);
     }
 });
-
-
-

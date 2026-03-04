@@ -5,7 +5,9 @@ const prisma = new PrismaClient();
 const resService = require('../services/resService');
 const resRepository = require('../repositories/resRepository'); 
 const redis = require('../config/redisClient'); // Redis 연결 설정
-const amqp = require('amqplib'); // RabbitMQ 연결 설정
+// 💡 [핵심] 환경 변수를 확실히 읽어오기 위해 최상단에 추가 (이미 있으면 패스)
+require('dotenv').config();
+const amqp = require('amqplib');
 
 // 1. 모든 이벤트(공연) 목록 조회
 exports.getAllEvents = async (req, res) => {
@@ -81,6 +83,17 @@ exports.createReservation = async (req, res) => {
         const bookingDetail = await resService.validateAndPrepare(event_id, ticket_count, member_id);
 
         /**
+         * [추가] DB에 예약 정보를 'PENDING' 상태로 먼저 저장
+         * 이 과정이 있어야 나중에 Spring에서 응답이 왔을 때 업데이트할 레코드가 존재해!
+         */
+        await resService.makeReservation({
+            event_id,
+            ticket_count: count,
+            total_price: bookingDetail.totalPrice,
+            ticket_code: bookingDetail.ticketCode
+        }, member_id);
+
+        /**
          * [Step 3: RabbitMQ 비동기 메시지 전송]
          * 결제 확정 및 DB 저장(PostgreSQL)은 부하가 큰 작업이므로 
          * 메시지 큐에 던져서 비동기적으로 처리함.
@@ -101,18 +114,26 @@ exports.createReservation = async (req, res) => {
 
         // 핵심 주석: Consumer(일꾼)가 처리할 수 있도록 예약 데이터를 JSON 문자열로 변환
         const msg = JSON.stringify({ 
-            member_id, 
-            event_id, 
-            ticket_count: count,
-            total_price: bookingDetail.totalPrice, 
-            ticket_code: bookingDetail.ticketCode  
+                // 1. Spring DTO 필드명과 1:1로 매칭
+            orderId: bookingDetail.ticketCode,   // ticket_code -> orderId
+            memberId: Number(member_id),         // member_id -> memberId (숫자형으로 전달)
+            amount: Number(bookingDetail.totalPrice), // total_price -> amount (숫자형)
+            type: "PAYMENT",                     // 요청 타입
+            eventTitle: bookingDetail.eventTitle, // 공연명 (DTO에 있음)
+            
+            // 2. [매우 중요] Spring 로그에 써있는 'replyRoutingKey'
+            // Spring이 처리를 끝내고 어디로 답장할지 알려줘야 해
+            replyRoutingKey: "res.status.update" 
         });
 
-        // 핵심 주석: 'reservation_queue'라는 우체통이 있는지 확인 (durable: true는 서버 재시작 시에도 유지됨을 의미)
-        await channel.assertQueue('reservation_queue', { durable: true });
-        // 핵심 주석: 준비된 메시지를 큐에 버퍼 형태로 전송
-        await channel.sendToQueue('reservation_queue', Buffer.from(msg));
+        const TARGET_QUEUE = 'pay.request.queue'; // 통합 큐 이름
 
+        // 핵심 주석: 우체통이 있는지 확인 (서버 재시작 시에도 유지되도록 durable: true)
+        await channel.assertQueue(TARGET_QUEUE, { durable: true }); 
+
+        // 이제 이 우체통으로 메시지 전송
+        await channel.sendToQueue(TARGET_QUEUE, Buffer.from(msg), { persistent: true });
+        
         // 자원 관리: 메시지 전송 후 일정 시간 뒤에 연결을 안전하게 닫음 (선택 사항)
         setTimeout(() => connection.close(), 500);
 
@@ -170,14 +191,21 @@ exports.requestRefund = async (req, res) => {
     try {
         // 1. 예약 정보 확인 (본인 확인 및 취소 가능 상태인지 체크)
         const reservation = await resRepository.findReservationByCode(ticket_code);
+
+        // [디버깅] 데이터가 정말 오는지 확인
+        console.log("🔍 DB에서 찾은 예약 데이터:", reservation);
         
         // [수정 포인트] reservation.member_id와 비교할 때 타입을 맞춤
-        // DB의 member_id와 요청의 member_id를 둘 다 숫자로 변환해서 비교!
-        if (!reservation || Number(reservation.member_id) !== Number(member_id)) {
+        // DB에서 가져온 BigInt 값(member_id)은 안전하게 문자열로 바꿔서 비교하는 게 제일 확실
+        if (!reservation || reservation.member_id.toString() !== member_id.toString()) {
             console.log(`❌ 불일치 발생: DB(${reservation?.member_id}) vs 요청(${member_id})`);
             return res.status(404).json({ message: "예약 정보를 찾을 수 없습니다." });
         }
         
+        // [핵심 체크] 서비스에 넘겨줄 때 'reservation' 객체 통째로 넘기는지 확인!
+        // ♻️ [환불수신] 로그가 undefined라면 여기서 reservation이 유실된 거야.
+        console.log(`♻️ [환불수송] 서비스로 던지는 티켓코드: ${reservation.ticket_code}`);
+
         if (reservation.status === 'CANCELED') {
             return res.status(400).json({ message: "이미 취소된 티켓입니다." });
         }

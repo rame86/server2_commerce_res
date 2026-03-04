@@ -32,7 +32,7 @@ async function startConsumer() {
         // 바인딩 (결제 서버로 나가는 통로 확보)
         await channel.bindQueue(PAY_QUEUE, EXCHANGE_NAME, PAY_ROUTING_KEY);
 
-        console.log(`👷 [Consumer] 대기 중... (구독: ${RES_QUEUE})`);
+        console.log(`👷 [Consumer] 대기 중... (구독: ${PAY_QUEUE})`);
 
         // 4. 예약 큐 모니터링 시작
         channel.consume(RES_QUEUE, async (msg) => {
@@ -78,7 +78,7 @@ async function startConsumer() {
 
         // --- [B] 환불 요청 처리 (새로 추가) ---
         // 사용자가 환불을 눌렀을 때 실행되는 큐
-        channel.consume(REFUND_QUEUE, async (msg) => {
+        channel.consume(PAY_QUEUE, async (msg) => {
             if (msg !== null) {
                 const data = JSON.parse(msg.content.toString()); // { ticket_code, member_id ... }
                 console.log("♻️ [환불수신] 환불 요청 도착:", data.ticket_code);
@@ -103,4 +103,4 @@ async function startConsumer() {
 
 
 // 컨슈머 실행
-startConsumer();
+module.exports = startConsumer;
