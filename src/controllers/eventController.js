@@ -9,18 +9,18 @@ exports.getEventLocation = async (req, res) => {
     const { eventId } = req.params;
     
     try {
-        // [1] 데이터 조회
+        // [1] 데이터 조회 (location -> event_locations로 변경)
         const event = await prisma.events.findUnique({
             where: { event_id: parseInt(eventId) },
-            include: { location: true } 
+            include: { event_locations: true } // 여기서 수정!
         });
 
-        // [2] 예외 처리 (데이터가 없는 경우 먼저 체크!)
-        if (!event || !event.location) {
+        // [2] 예외 처리 (변수명도 event.event_locations로 체크)
+        if (!event || !event.event_locations) {
             return res.status(404).json({ message: "해당 공연 정보를 찾을 수 없어." });
         }
 
-        let loc = event.location;
+        let loc = event.event_locations; // 여기서 수정!
 
         // [3] 좌표가 없으면 카카오 API로 채워넣기 (Lazy Loading)
         if (!loc.latitude || !loc.longitude) {
@@ -34,7 +34,7 @@ exports.getEventLocation = async (req, res) => {
             }
         }
 
-        // [4] 최종 응답 (딱 한 번만!)
+        // [4] 최종 응답
         res.json({
             title: event.title,
             venue: loc.venue,

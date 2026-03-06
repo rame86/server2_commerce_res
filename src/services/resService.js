@@ -1,12 +1,5 @@
 // src/services/resService.js
 
-/**
- * FanVerse(LuminaPulse) - Reservation Service Layer
- * 핵심 변경 사항:
- * 1. RabbitMQ 직접 연결 로직 완전 제거 (Controller -> Queue 위임)
- * 2. Redis 실시간 재고 선차감(decrBy) 및 에러 발생 시 자동 롤백(incrBy) 적용
- */
-
 require('dotenv').config();
 const resRepository = require('../repositories/resRepository');
 const redis = require('../config/redisClient');
@@ -38,7 +31,7 @@ const initEventStock = async (eventId, stockCount) => {
 };
 
 /**
- * [핵심] 예약 검증 및 준비 (네 원본 로직 100% 유지)
+ * [핵심] 예약 검증 및 준비 (Controller에서 호출됨)
  */
 const validateAndPrepare = async (eventId, count, memberId) => {
     const stockKey = `event:stock:${eventId}`;
@@ -68,6 +61,7 @@ const validateAndPrepare = async (eventId, count, memberId) => {
             throw { status: 404, message: "공연 정보를 찾을 수 없습니다." };
         }
 
+        // 수수료 1000원 포함 계산
         const totalPrice = (event.price * count) + (count * 1000);
 
         // 4. 포인트 잔액 검증
@@ -78,7 +72,9 @@ const validateAndPrepare = async (eventId, count, memberId) => {
             };
         }
 
-        const ticketCode = `TKT-${Math.floor(Math.random() * 90000) + 10000}`;
+        // 짧고 깔끔한 티켓 코드 생성 (날짜 + 랜덤)
+        const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 260306
+        const ticketCode = `TKT-${dateStr}-${Math.floor(Math.random() * 9000) + 1000}`;
 
         return {
             totalPrice,
@@ -88,26 +84,37 @@ const validateAndPrepare = async (eventId, count, memberId) => {
         };
 
     } catch (err) {
-        // [중요 보상 트랜잭션] 선차감 재고 원복
+        // 에러 시 재고 원복 (보상 트랜잭션)
         await redis.incrBy(stockKey, count);
         throw err;
     }
 };
 
 /**
- * [티켓 예매 실행 (DB 저장)]
+ * [티켓 예매 실행 (DB 저장)] - Consumer에서 호출됨
+ * 💡 수정 포인트: 데이터를 DB에 넣은 후, 다시 객체에 담아서 반환해야 결제 서버로 전달됨!
  */
 const makeReservation = async (resData, memberId) => {
+    // 1. DB 저장을 위한 데이터 매핑
     const dbData = {
         event_id: parseInt(resData.event_id, 10),
         ticket_count: parseInt(resData.ticket_count, 10),
         member_id: memberId,
-        total_price: resData.total_price,
-        ticket_code: resData.ticket_code
+        total_price: resData.totalPrice || resData.total_price, // validateAndPrepare에서 온 값 우선
+        ticket_code: resData.ticketCode || resData.ticket_code
     };
 
+    // 2. DB 저장 실행
     const dbResult = await resRepository.createReservationWithTransaction(dbData);
 
+    // 3. 🌟 중요: consumer.js가 결제 서버로 보낼 수 있도록 데이터를 업데이트해서 반환
+    // resData 객체 자체에 값을 할당해줘야 참조 에러가 안 나
+    resData.total_price = dbData.total_price;
+    resData.ticket_code = dbData.ticket_code;
+
+    console.log(`✅ [DB 저장 완료] 티켓번호: ${resData.ticket_code}`);
+
+    // BigInt 처리 및 반환
     return JSON.parse(JSON.stringify(dbResult, (key, value) => 
         typeof value === 'bigint' ? value.toString() : value
     ));
@@ -142,7 +149,6 @@ const processRefund = async (ticketCode, memberId) => {
     };
 };
 
-// 💡 여기서 모든 함수를 한 번에 내보냄 (this 에러 방지)
 module.exports = {
     warmupAllEventsToRedis,
     initEventStock,

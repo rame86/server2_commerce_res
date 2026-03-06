@@ -5,7 +5,7 @@ const prisma = new PrismaClient();
 const resService = require('../services/resService');
 const resRepository = require('../repositories/resRepository'); 
 const redis = require('../config/redisClient'); 
-const { publishToQueue } = require('../config/rabbitMQ'); // 🚀 추가된 우체부 파일
+const { publishToQueue, ROUTING_KEYS } = require('../config/rabbitMQ');
 
 // 1. 모든 이벤트(공연) 목록 조회 (기존과 동일)
 exports.getAllEvents = async (req, res) => {
@@ -37,14 +37,13 @@ exports.createReservation = async (req, res) => {
         // [1] 토큰 검증 (Redis)
         const redisData = await redis.hGetAll(`AUTH:MEMBER:${member_id}`);
         if (!redisData || Object.keys(redisData).length === 0 || redisData.token !== clientToken) {
-            return res.status(401).json({ message: "유효하지 않은 토큰이거나 세션이 만료되었습니다." });
+            return res.status(401).json({ message: "유효하지 않은 토큰입니다." });
         }
-        console.log(`✅ 인증 성공: 유저 ${member_id}`);
 
-        // [2] 서비스 계층 호출 (재고 차감, 포인트 검증은 여기서 알아서 다 해줌!)
+        // [2] 서비스 계층 호출 (재고 차감, 포인트 검증)
         const bookingDetail = await resService.validateAndPrepare(event_id, count, member_id);
         
-        // [3] DB에 PENDING 상태로 먼저 저장
+        // [3] DB에 PENDING 상태 저장
         await resService.makeReservation({
             event_id,
             ticket_count: count,
@@ -52,18 +51,21 @@ exports.createReservation = async (req, res) => {
             ticket_code: bookingDetail.ticketCode
         }, member_id);
 
-        // [4] RabbitMQ로 메세지 던지기 (amqp 연결 로직은 rabbitMQ.js로 위임)
+        // [4] RabbitMQ로 메세지 던지기
         const messagePayload = {
             orderId: bookingDetail.ticketCode,
             memberId: Number(member_id),
             amount: Number(bookingDetail.totalPrice),
             type: "PAYMENT",
             eventTitle: bookingDetail.eventTitle,
-            replyRoutingKey: "res.status.update" 
+            replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE // 💡 "res.status.update"
         };
         
-        await publishToQueue('pay.request.queue', messagePayload);
-        console.log("✅ 결제 요청 MQ 전송 성공");
+        // 🚨 꿀팁: 큐 이름('pay.request.queue')이 아니라 라우팅 키('pay.request')를 써야 해!
+        // config/rabbitMQ.js의 ROUTING_KEYS.PAY_REQUEST를 사용하자.
+        await publishToQueue(ROUTING_KEYS.PAY_REQUEST, messagePayload);
+        
+        console.log(`🚀 [MQ 전송] 결제 서버로 발송 완료: ${bookingDetail.ticketCode}`);
 
         // [5] 성공 응답
         res.status(202).json({ 
@@ -73,9 +75,8 @@ exports.createReservation = async (req, res) => {
         });
 
     } catch (error) {
-        // 💡 주의: 재고 롤백(incrBy)은 이미 resService.validateAndPrepare 안에서 다 처리하고 에러를 던지기 때문에, 여기서 또 할 필요 없어! (이중 롤백 방지)
         console.error("예약 처리 중 오류:", error);
-        res.status(error.status || 500).json({ message: error.message || "서버 오류가 발생했습니다." });
+        res.status(error.status || 500).json({ message: error.message || "서버 오류" });
     }
 };
 
@@ -109,16 +110,24 @@ exports.requestRefund = async (req, res) => {
     const { ticket_code, member_id } = req.body; 
 
     try {
-        // 본인 확인 및 취소 가능 상태 체크 등 복잡한 검증은 서비스에서 수행
         const refundPayload = await resService.processRefund(ticket_code, member_id);
 
-        // 검증이 끝났으면 MQ 환불 큐로 메세지 전송 (필요시 rabbitMQ.js 사용)
-        await publishToQueue('refund_request_queue', refundPayload);
+        // 환불 데이터 규격 맞추기
+        const messagePayload = {
+            orderId: refundPayload.ticket_code,
+            memberId: Number(refundPayload.member_id),
+            amount: Number(refundPayload.cancel_amount),
+            type: "REFUND",
+            replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE
+        };
 
-        res.status(200).json({ message: "환불 요청이 성공적으로 접수되었습니다." });
+        // 💡 환불도 결제 요청 키('pay.request')를 사용해 (Spring 명세서 기준)
+        await publishToQueue(ROUTING_KEYS.PAY_REQUEST, messagePayload);
+
+        res.status(200).json({ message: "환불 요청이 접수되었습니다." });
     } catch (error) {
-        console.error("환불 처리 중 오류:", error);
-        res.status(error.status || 500).json({ message: error.message || "환불 처리 중 오류가 발생했습니다." });
+        console.error("환불 오류:", error);
+        res.status(error.status || 500).json({ message: error.message });
     }
 };
 

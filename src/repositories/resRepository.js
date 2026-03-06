@@ -55,15 +55,13 @@ exports.findEventById = async (eventId) => {
  * 일반적인 단순 조회는 Pool에서 비어있는 클라이언트를 자동으로 하나 써서 결과를 가져옴
  * **"요청이 올 때마다 DB에서 꺼내오는 방식"**
  */
-// resRepository.js
-
 exports.findAllEvents = async () => {
     try {
-        // [체크] 여기서 prisma 객체가 상단에 선언되어 있는지 꼭 확인해!
-        // const { PrismaClient } = require('@prisma/client');
-        // const prisma = new PrismaClient();
-
         return await prisma.events.findMany({ 
+            include: {
+                event_locations: true,
+                event_images: true // 사진 정보도 한꺼번에 가져오기!
+            },
             orderBy: { event_date: 'asc' }
         });
     } catch (err) {
@@ -136,7 +134,7 @@ exports.cancelReservationAndRestoreStock = async (ticket_code, event_id, ticket_
         const updatedRes = await tx.reservations.update({
             // ticket_code 대신 이미 DB에서 조회해온 진짜 ID를 사용
             where: { reservation_id: reservation.reservation_id },
-            data: { status: 'REFUNDED' }
+            data: { status: 'FAILED' }
         });
 
         // 3. DB 재고 원복
