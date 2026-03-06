@@ -11,20 +11,20 @@ datasource db {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model events {
-  event_id        Int            @id @default(autoincrement())
-  title           String         @db.VarChar(255)
-  artist_name     String?        @db.VarChar(100)
-  event_type      String?        @db.VarChar(50)
+  event_id        Int              @id @default(autoincrement())
+  title           String           @db.VarChar(255)
+  artist_name     String?          @db.VarChar(100)
+  event_type      String?          @db.VarChar(50)
   price           Int
   total_capacity  Int
   available_seats Int
-  venue           String         @db.VarChar(255)
-  address         String         @db.VarChar(500)
-  event_date      DateTime       @db.Timestamptz(6)
-  open_time       DateTime       @db.Timestamptz(6)
-  close_time      DateTime       @db.Timestamptz(6)
-  version         Int            @default(0)
-  created_at      DateTime?      @default(now()) @db.Timestamptz(6)
+  event_date      DateTime         @db.Timestamptz(6)
+  open_time       DateTime         @db.Timestamptz(6)
+  close_time      DateTime         @db.Timestamptz(6)
+  version         Int              @default(0)
+  created_at      DateTime?        @default(now()) @db.Timestamptz(6)
+  event_images    event_images[]
+  event_locations event_locations?
   reservations    reservations[]
 
   @@index([open_time, close_time], map: "idx_events_open_close")
@@ -39,11 +39,37 @@ model reservations {
   ticket_count   Int
   total_price    Int
   ticket_code    String    @unique @db.VarChar(50)
-  booked_at      DateTime? @default(now()) @db.Timestamptz(6)
   status         String?   @default("PENDING") @db.VarChar(20)
+  booked_at      DateTime? @default(now()) @db.Timestamptz(6)
   events         events    @relation(fields: [event_id], references: [event_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([event_id], map: "idx_reservations_event")
-  @@index([member_id], map: "idx_reservations_user")
+  @@index([member_id], map: "idx_reservations_member")
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model event_images {
+  image_id   Int       @id @default(autoincrement())
+  event_id   Int
+  image_url  String    @db.VarChar(500)
+  image_role String?   @default("DETAIL") @db.VarChar(20)
+  sort_order Int?      @default(0)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  events     events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([event_id], map: "idx_event_images_event_id")
+  @@schema("res")
+}
+
+model event_locations {
+  event_id   Int       @id
+  venue      String    @db.VarChar(255)
+  address    String    @db.VarChar(500)
+  latitude   Decimal?  @db.Decimal(10, 8)
+  longitude  Decimal?  @db.Decimal(11, 8)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  events     events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
   @@schema("res")
 }

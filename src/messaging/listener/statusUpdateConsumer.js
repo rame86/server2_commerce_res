@@ -1,120 +1,106 @@
-// src/messaging/listener/statusUpdateConsumer.js
-require('dotenv').config();
 const amqp = require('amqplib');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const redis = require('../../config/redisClient');
+const { QUEUES, EXCHANGE, ROUTING_KEYS } = require('../../config/rabbitMQ');
 
+/**
+ * 결제 서버(Spring)로부터 받은 최종 처리 결과(성공/실패/환불)를 
+ * 우리 DB 및 Redis 재고에 동기화하는 소비자 함수야.
+ */
 async function startStatusUpdateConsumer() {
-    // 핵심 주석: 환경 변수로 접속 정보 동적 할당 (하드코딩 방지)
-    const mqUser = process.env.RABBITMQ_USER || 'guest';
-    const mqPass = process.env.RABBITMQ_PASSWORD || 'guest';
-    const mqHost = process.env.RABBITMQ_HOST || 'localhost';
-    const rabbitUrl = `amqp://${mqUser}:${mqPass}@${mqHost}:5672`;
+    // 환경 변수에서 RabbitMQ 접속 정보를 가져와
+    const rabbitUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASSWORD}@${process.env.RABBITMQ_HOST}:5672`;
 
     try {
         const connection = await amqp.connect(rabbitUrl);
         const channel = await connection.createChannel();
 
-        const EXCHANGE_NAME = "msa.direct.exchange"; 
-        const UPDATE_QUEUE = "res.status.update.queue";
-        const ROUTING_KEY = "res.status.update"; 
+        // 중앙 설정 파일(rabbitMQ.js)에 정의된 큐와 익스체인지를 사용해
+        await channel.assertQueue(QUEUES.STATUS_UPDATE, { durable: true });
+        await channel.bindQueue(QUEUES.STATUS_UPDATE, EXCHANGE, ROUTING_KEYS.STATUS_UPDATE);
 
-        await channel.assertExchange(EXCHANGE_NAME, 'direct', { durable: true });
-        await channel.assertQueue(UPDATE_QUEUE, { durable: true });
-        await channel.bindQueue(UPDATE_QUEUE, EXCHANGE_NAME, ROUTING_KEY);
+        console.log(`📩 [Status Consumer] 결과 수신 대기 중: ${QUEUES.STATUS_UPDATE}`);
 
-        console.log(`📩 [Status Consumer] 통합 결과 수신 대기 중 (Exchange: ${EXCHANGE_NAME}, Queue: ${UPDATE_QUEUE})...`);
-
-        channel.consume(UPDATE_QUEUE, async (msg) => {
+        channel.consume(QUEUES.STATUS_UPDATE, async (msg) => {
             if (!msg) return;
 
+            // 수신된 메시지를 JSON 객체로 파싱해
             const response = JSON.parse(msg.content.toString());
-            console.log("-----------------------------------------");
-            console.log("📩 [수신 데이터 확인]:", response); 
-            console.log("-----------------------------------------");
-
-            // 핵심 주석: 실패 사유(message)도 함께 추출해서 로깅에 활용
-            const { orderId, status, type, message } = response; 
-
-            // 💡 1. 들어온 상태값을 대문자로 정규화 (null 체크 포함)
+            const { orderId, status, type, message } = response;
+            
+            // 상태값을 비교하기 쉽게 대문자로 통일해 (예: success -> SUCCESS)
             const normalizedStatus = status ? status.toUpperCase() : '';
 
             try {
-                // normalizedStatus는 "정규화(Normalization)된 상태"라는 뜻
-                // ⭐ [추가] 결제/환불 실패 (FAIL) 시 보상 트랜잭션 로직
-                if (normalizedStatus === 'FAIL' || normalizedStatus === 'FAILED') {
-                    console.error(`❌ [처리 실패] 주문: ${orderId}, 사유: ${message}`);
+                // 1. 결제 실패 상황 처리 (FAIL 또는 FAILED)
+                if (['FAIL', 'FAILED'].includes(normalizedStatus)) {
+                    console.error(`❌ [결제 실패 수신] 주문번호: ${orderId}, 사유: ${message}`);
                     
-                    const reservation = await prisma.reservations.findUnique({
-                        where: { ticket_code: orderId }
-                    });
-
-                    // 아직 취소(FAILED) 처리가 안 된 건이라면 DB 및 재고 롤백
-                    if (reservation && reservation.status !== 'FAILED') {
+                    // DB에서 해당 주문이 있는지 먼저 조회해
+                    const res = await prisma.reservations.findUnique({ where: { ticket_code: orderId } });
+                    
+                    // 데이터가 존재하고 아직 실패 처리가 안 된 경우에만 로직 실행
+                    if (res && res.status !== 'FAILED') {
                         await prisma.$transaction(async (tx) => {
-                            await tx.reservations.update({
-                                where: { ticket_code: orderId },
-                                data: { status: 'FAILED' }  // DB는 우리 표준인 'FAILED'로 저장
-                            });
-                            await tx.events.update({
-                                where: { event_id: reservation.event_id },
-                                data: { available_seats: { increment: reservation.ticket_count } }
-                            });
+                            // 예약 상태를 FAILED로 변경
+                            await tx.reservations.update({ where: { ticket_code: orderId }, data: { status: 'FAILED' } });
+                            // DB의 이벤트 잔여 좌석을 다시 늘려줘
+                            await tx.events.update({ where: { event_id: res.event_id }, data: { available_seats: { increment: res.ticket_count } } });
                         });
-
-                        const stockKey = `event:stock:${reservation.event_id}`;
-                        await redis.incrBy(stockKey, reservation.ticket_count);
-                        console.log(`⏪ [롤백 완료] 주문 ${orderId} -> FAILED 변경 및 재고 복구 완료`);
+                        // Redis에 저장된 실시간 재고도 다시 복구해
+                        await redis.incrBy(`event:stock:${res.event_id}`, res.ticket_count);
+                        console.log(`⏪ [롤백 완료] 주문 ${orderId} 재고 복구 성공`);
                     }
                 } 
-                // ⭐ 3. 성공 및 환불 확정 로직 (배열을 써서 깔끔하게 비교)
+                
+                // 2. 결제 성공 또는 환불 확정 상황 처리
                 else if (['COMPLETE', 'SUCCESS', 'REFUNDED'].includes(normalizedStatus)) {
-                    if (type === 'REFUND' || status === 'REFUNDED') {
-                        console.log(`♻️ [환불 확정] DB 업데이트 시작: ${orderId}`);
-
-                        const reservation = await prisma.reservations.findUnique({
-                            where: { ticket_code: orderId }
-                        });
-
-                        if (reservation && reservation.status !== 'REFUNDED') {
+                    
+                    // [환불 처리] 타입이 REFUND이거나 상태가 REFUNDED인 경우
+                    if (type === 'REFUND' || normalizedStatus === 'REFUNDED') {
+                        const res = await prisma.reservations.findUnique({ where: { ticket_code: orderId } });
+                        
+                        if (res && res.status !== 'REFUNDED') {
                             await prisma.$transaction(async (tx) => {
-                                await tx.reservations.update({
-                                    where: { ticket_code: orderId },
-                                    data: { status: 'REFUNDED' }
-                                });
-                                await tx.events.update({
-                                    where: { event_id: reservation.event_id },
-                                    data: { available_seats: { increment: reservation.ticket_count } }
-                                });
+                                // 예약 상태를 REFUNDED로 변경
+                                await tx.reservations.update({ where: { ticket_code: orderId }, data: { status: 'REFUNDED' } });
+                                // 환불되었으니 좌석을 다시 확보해
+                                await tx.events.update({ where: { event_id: res.event_id }, data: { available_seats: { increment: res.ticket_count } } });
                             });
-
-                            const stockKey = `event:stock:${reservation.event_id}`;
-                            await redis.incrBy(stockKey, reservation.ticket_count);
-                            
-                            console.log(`🚀 [복구 완료] 주문 ${orderId} -> REFUNDED 변경 및 재고 환원 완료`);
+                            await redis.incrBy(`event:stock:${res.event_id}`, res.ticket_count);
+                            console.log(`♻️ [환불 완료] 주문 ${orderId} 재고 환원 성공`);
                         }
-                    } else {
-                        // 결제 완료 처리
-                        await prisma.reservations.update({
-                            where: { ticket_code: orderId },
-                            data: { status: 'CONFIRMED' }
-                        });
-                        console.log(`✅ [결제 완료] 주문 ${orderId} -> CONFIRMED 변경`);
+                    } 
+                    // [결제 완료 처리] 일반 결제 성공인 경우
+                    else {
+                        // 💡 중요: 업데이트 전에 데이터가 있는지 확인하여 "No record found" 에러 방지
+                        const res = await prisma.reservations.findUnique({ where: { ticket_code: orderId } });
+                        
+                        if (res) {
+                            await prisma.reservations.update({
+                                where: { ticket_code: orderId },
+                                data: { status: 'CONFIRMED' }
+                            });
+                            console.log(`✅ [결제 완료] 주문 ${orderId} -> CONFIRMED 상태 변경`);
+                        } else {
+                            // 데이터가 없으면 무리하게 업데이트하지 않고 로그만 남겨
+                            console.warn(`⚠️ [경고] DB에 존재하지 않는 티켓(${orderId})의 결제 성공 메시지를 수신함`);
+                        }
                     }
                 }
-                
-                // 정상 처리 완료 시에만 메시지 삭제
+
+                // 처리가 완료되면 큐에서 메시지를 삭제해
                 channel.ack(msg);
+
             } catch (error) {
-                console.error("❌ 컨슈머 내부 처리 에러:", error.message);
-                // DB 에러 등 내부 오류 시 nack로 큐에 유지(또는 버림)
-                channel.nack(msg, false, false); 
+                console.error("❌ 처리 도중 내부 오류 발생:", error.message);
+                // 오류 발생 시 메시지를 다시 큐에 넣지 않고 일단 버림 (무한 루프 방지)
+                channel.nack(msg, false, false);
             }
         });
-
     } catch (error) {
-        console.error("❌ RabbitMQ 연결 또는 채널 생성 에러:", error.message);
+        console.error("❌ StatusUpdateConsumer 연결 실패:", error.message);
     }
 }
 

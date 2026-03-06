@@ -15,8 +15,8 @@ exports.getCoordinates = async (address) => {
         if (!document) return null;
 
         return {
-            lat: document.y, // 위도
-            lng: document.x  // 경도
+            lat: parseFloat(document.y), // 숫자로 변환
+            lng: parseFloat(document.x) 
         };
     } catch (error) {
         console.error("❌ 카카오 API 호출 실패:", error.message);
