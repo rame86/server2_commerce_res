@@ -4,6 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan'); // [추가] 로그 확인용
+const { connectRabbitMQ } = require('./config/rabbitMQ'); // [추가] MQ 연결 함수 가져오기
 
 // [1] 앱 초기화 및 기본 설정
 const app = express();
@@ -61,6 +62,9 @@ app.listen(PORT, async () => {
     console.log(`🚀 [Reservation] Service is running on port ${PORT}`);
 
     try {
+        // 0. RabbitMQ '발행용' 채널 먼저 연결 [가장 중요!!]
+        await connectRabbitMQ(); // [추가] 이걸 실행해야 컨트롤러에서 메시지를 보낼 수 있어!
+
         // 1. RabbitMQ Consumer들을 순차적으로 실행 (환경 변수 적용 확실히 보장)
         // consumer.js에서 startConsumer가 module.exports 되어 있어야 함!
         await startConsumer(); 

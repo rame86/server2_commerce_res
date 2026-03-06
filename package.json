@@ -10,6 +10,7 @@
   "dependencies": {
     "@prisma/client": "^6.19.2",
     "amqplib": "^0.10.9",
+    "axios": "^1.13.6",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",

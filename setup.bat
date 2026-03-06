@@ -5,8 +5,8 @@ call npm install
 echo [2/3] Prisma 클라이언트 생성 중...
 call npx prisma generate
 
-echo [3/3] DB 마이그레이션 실행 중...
-call npx prisma migrate dev
+echo [3/3] DB 마이그레이션 반영 중...
+call npx prisma migrate deploy
 
-echo 모든 세팅이 완료되었습니다! 'npm run dev'를 입력하세요.
+echo 모든 세팅이 완료되었습니다!
 pause

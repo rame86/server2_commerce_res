@@ -39,8 +39,8 @@ model reservations {
   ticket_count   Int
   total_price    Int
   ticket_code    String    @unique @db.VarChar(50)
-  status         String?   @default("CONFIRMED") @db.VarChar(20)
   booked_at      DateTime? @default(now()) @db.Timestamptz(6)
+  status         String?   @default("PENDING") @db.VarChar(20)
   events         events    @relation(fields: [event_id], references: [event_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([event_id], map: "idx_reservations_event")
