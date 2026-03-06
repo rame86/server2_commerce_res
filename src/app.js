@@ -52,6 +52,7 @@ app.use((err, req, res, next) => {
 
 // [7] 서버 실행 및 초기 데이터 로드 (Warm-up)
 const resService = require('./services/resService');
+const eventService = require('./services/eventService');
 
 // 💡 수정: 단순히 require만 하지 말고 함수로 가져와서 나중에 실행할 것
 const startConsumer = require('./messaging/listener/consumer'); 
@@ -76,7 +77,8 @@ app.listen(PORT, async () => {
         console.log("✅ [Messaging] 모든 RabbitMQ 컨슈머 연결 성공");
 
         // 2. Redis 재고 Warm-up 실행
-        await resService.warmupAllEventsToRedis();
+        await eventService.warmupAllEventsToRedis();
+        
         console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
 
     } catch (err) {
