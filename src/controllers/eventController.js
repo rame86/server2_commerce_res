@@ -167,68 +167,6 @@ exports.requestEventApproval = async (req, res) => {
     }
 };
 
-// /**
-//  * [4] 🌟 새로운 공연 등록 (Redis 실시간 동기화 포함)
-//  */
-
-// exports.createEvent = async (req, res) => {
-//     // [구조 분해 할당] 클라이언트가 전송한 바디(body) 데이터에서 필요한 필드들을 꺼내옴
-//     const { title, total_seats, price, description, venue, address } = req.body;
-
-//     try {
-//         /**
-//          * [트랜잭션 시작] 
-//          * 공연(events) 생성과 장소(event_locations) 생성은 반드시 둘 다 성공해야 하므로 prisma.$transaction을 사용함
-//          */
-//         const newEvent = await prisma.$transaction(async (tx) => {
-            
-//             // [공연 데이터 생성] 입력을 숫자로 강제 변환하여 events 테이블에 레코드를 삽입함
-//             const event = await tx.events.create({
-//                 data: {
-//                     title,
-//                     total_seats: parseInt(total_seats, 10),
-//                     available_seats: parseInt(total_seats, 10), // 선착순 티켓팅을 위해 초기 잔여석을 전체 좌석수로 세팅함
-//                     price: parseInt(price, 10),
-//                     description
-//                 }
-//             });
-
-//             // [위치 데이터 생성] 생성된 공연의 ID를 FK(Foreign Key)로 사용하여 위치 테이블에 상세 정보를 삽입함
-//             await tx.event_locations.create({
-//                 data: {
-//                     event_id: event.event_id,
-//                     venue,
-//                     address
-//                 }
-//             });
-
-//             // [결과 반환] 트랜잭션 내부에서 생성된 최종 공연 객체를 상위 변수로 전달함
-//             return event;
-//         });
-
-//         /**
-//          * [Redis 캐시 동기화]
-//          * DB 등록이 완벽히 끝난 직후, 실시간 재고 차감의 성능을 위해 Redis에 해당 공연의 키를 생성하고 초기 잔여석을 세팅함
-//          */
-//         const stockKey = `event:stock:${newEvent.event_id}`;
-        
-//         // [Side-Write 전략] Redis 클라이언트를 통해 메모리에 'event:stock:{id}' 형식의 키를 생성하고 값을 저장함
-//         await redis.set(stockKey, newEvent.available_seats);
-
-//         console.log(`✅ [신규 공연] DB 등록 및 Redis 재고 생성 완료: ${stockKey}`);
-
-//         // [성공 응답] 생성된 리소스의 정보를 담아 201(Created) 상태코드를 전송함
-//         res.status(201).json({
-//             message: "공연 등록 성공!",
-//             event_id: newEvent.event_id
-//         });
-
-//     } catch (error) {
-//         console.error("❌ 공연 등록 중 오류:", error.message);
-//         res.status(500).json({ message: "공연 등록에 실패했어." });
-//     }
-// };
-
 /**
  * [5] 모든 이벤트 재고 Redis 동기화 (Admin Warm-up)
  */
