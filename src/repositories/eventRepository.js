@@ -57,7 +57,11 @@ exports.findEventById = async (eventId) => {
      * PK(Primary Key)인 event_id를 기준으로 정확히 한 건만 추출함.
      */
     return await prisma.events.findUnique({
-        where: { event_id: parseInt(eventId, 10) }
+        where: { 
+            event_id: parseInt(eventId, 10),
+            // 🌟 상세 조회 시에도 승인된 건인지 확인하고 싶다면 아래 주석 해제 (단, findFirst 사용 권장)
+            approval_status: 'CONFIRMED' 
+        }
     });
 };
 
@@ -73,6 +77,10 @@ exports.findAllEvents = async () => {
          * 한 번의 쿼리로 묶어 가져옴 (JOIN 수행).
          */
         return await prisma.events.findMany({ 
+            // 🌟 [필터] 승인 완료(CONFIRMED)된 공연만 사용자에게 보여줌
+            where: {
+                approval_status: 'CONFIRMED'
+            },
             include: {
                 event_locations: true,
                 event_images: true // 사진 정보도 한꺼번에 가져오기!
@@ -88,4 +96,56 @@ exports.findAllEvents = async () => {
         console.error("❌ Repository findAllEvents 에러:", err);
         throw err;
     }
+};
+
+
+/**
+ * [승인 대기열 조회]
+ */
+exports.findApprovalById = async (approvalId) => {
+    return await prisma.event_approvals.findUnique({
+        where: { approval_id: Number(approvalId) }
+    });
+};
+
+/**
+ * [승인 데이터 최종 확정 저장]
+ * Service에서 넘겨준 트랜잭션(tx) 객체를 그대로 사용해서 원자성을 보장함.
+ */
+exports.confirmEvent = async (tx, eventData, locationData, approvalId, adminId) => {
+    // 1. 실제 공연 생성
+    const newEvent = await tx.events.create({ data: eventData });
+
+    // 2. 위치 정보 생성
+    await tx.event_locations.create({
+        data: { ...locationData, event_id: newEvent.event_id }
+    });
+
+    // 3. 신청 대기열 상태 업데이트
+    await tx.event_approvals.update({
+        where: { approval_id: Number(approvalId) },
+        data: { 
+            status: 'CONFIRMED', 
+            event_id: newEvent.event_id,
+            admin_id: adminId ? BigInt(adminId) : null,
+            processed_at: new Date()
+        }
+    });
+
+    return newEvent;
+};
+
+/**
+ * [반려 상태 업데이트]
+ */
+exports.updateApprovalFailed = async (approvalId, adminId, reason) => {
+    return await prisma.event_approvals.update({
+        where: { approval_id: Number(approvalId) },
+        data: { 
+            status: 'FAILED', 
+            rejection_reason: reason,
+            admin_id: adminId ? BigInt(adminId) : null,
+            processed_at: new Date()
+        }
+    });
 };

@@ -3,8 +3,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const morgan = require('morgan'); // [추가] 로그 확인용
-const { connectRabbitMQ } = require('./config/rabbitMQ'); // [추가] MQ 연결 함수 가져오기
+const morgan = require('morgan'); // 로그 확인용
+const { connectRabbitMQ } = require('./config/rabbitMQ'); // MQ 연결 함수 가져오기
 
 // [1] 앱 초기화 및 기본 설정
 const app = express();
@@ -50,6 +50,11 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
+// BigInt를 JSON으로 보낼 때 자동으로 숫자(또는 문자열)로 변환해주는 마법의 코드
+BigInt.prototype.toJSON = function() {
+    return this.toString();
+};
+
 // [6] 전역 에러 핸들러: 서버 내부에서 발생하는 모든 예외를 캐치하여 500 에러로 응답함
 app.use((err, req, res, next) => {
     console.error(`[Internal Error] ${err.stack}`);
@@ -64,6 +69,7 @@ const eventService = require('./services/eventService');
 const startConsumer = require('./messaging/listener/consumer'); 
 const startCancelConsumer = require('./messaging/listener/cancelConsumer');
 const startStatusUpdateConsumer = require('./messaging/listener/statusUpdateConsumer');
+const startEventResponseConsumer = require('./messaging/listener/eventResponseConsumer');
 
 /**
  * [서버 리스닝 및 초기화 프로세스]
@@ -85,6 +91,8 @@ app.listen(PORT, async () => {
         await startConsumer(); 
         await startCancelConsumer();
         await startStatusUpdateConsumer();
+        // 🌟 공연 승인 결과 처리 컨슈머 실행
+        await startEventResponseConsumer();
 
         console.log("✅ [Messaging] 모든 RabbitMQ 컨슈머 연결 성공");
 

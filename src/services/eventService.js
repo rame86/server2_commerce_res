@@ -3,6 +3,7 @@ const axios = require('axios');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const redis = require('../config/redisClient');
+const eventRepository = require('../repositories/eventRepository');
 
 /**
  * [전체 이벤트 재고 Redis Warm-up]
@@ -27,6 +28,7 @@ exports.warmupAllEventsToRedis = async () => {
          * DB 부하 및 메모리 사용량을 최적화함.
          */
         const events = await prisma.events.findMany({
+            where: { approval_status: 'CONFIRMED' }, // 🌟 이 줄을 추가해!
             select: { event_id: true, available_seats: true }
         });
 
@@ -113,4 +115,50 @@ exports.initEventStock = async (eventId, stockCount) => {
     await redis.set(key, stockCount);
     
     return { eventId, stockCount };
+};
+
+/**
+ * [관리자 응답 처리 서비스]
+ * 컨슈머로부터 데이터를 받아 성공/실패 로직을 진두지휘함.
+ */
+exports.processAdminResponse = async (response) => {
+    const { approvalId, status, admin_id, rejectionReason } = response;
+
+    // 1. 원본 신청 데이터가 있는지 리포지토리에 물어봄
+    const approvalReq = await eventRepository.findApprovalById(approvalId);
+    if (!approvalReq) throw new Error(`승인 요청건을 찾을 수 없음: ${approvalId}`);
+
+    if (status === 'CONFIRMED') {
+        const snapshot = approvalReq.event_snapshot;
+
+        // 가공된 데이터 세트 준비
+        const eventData = {
+            title: snapshot.title,
+            artist_id: snapshot.artist_id,
+            artist_name: snapshot.artist_name,
+            event_type: snapshot.event_type,
+            description: snapshot.description,
+            price: snapshot.price,
+            total_capacity: snapshot.total_capacity,
+            available_seats: snapshot.total_capacity,
+            event_date: snapshot.event_date,
+            open_time: snapshot.open_time,
+            close_time: snapshot.close_time,
+            approval_status: 'CONFIRMED'
+        };
+
+        const locationData = {
+            venue: snapshot.venue,
+            address: snapshot.address
+        };
+
+        // 2. 트랜잭션 실행 (리포지토리 호출)
+        return await prisma.$transaction(async (tx) => {
+            return await eventRepository.confirmEvent(tx, eventData, locationData, approvalId, admin_id);
+        });
+
+    } else if (status === 'FAILED') {
+        // 3. 반려 로직 수행
+        return await eventRepository.updateApprovalFailed(approvalId, admin_id, rejectionReason);
+    }
 };

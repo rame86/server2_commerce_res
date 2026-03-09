@@ -11,7 +11,7 @@ router.get('/events', eventController.getAllEvents); // 👈 eventController로 
 
 // [POST] 🌟 새로운 공연 등록 (Redis 동기화 로직 포함된 버전)
 // 예: http://localhost:8082/events
-router.post('/events', eventController.createEvent);
+router.post('/events', eventController.requestEventApproval);
 
 // [GET] 특정 이벤트 상세 정보 조회 (Booking Process 진입 시 필요할 수 있음)
 // 예: http://localhost:8082/events/:eventId

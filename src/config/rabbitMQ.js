@@ -10,13 +10,19 @@ const QUEUES = {
     REFUND_REQUEST: 'refund.request.queue',
     STATUS_UPDATE: 'res.status.update.queue',
     CANCEL: 'reservation.cancel.queue',
-    PAY_REQUEST: 'pay.request.queue'
+    PAY_REQUEST: 'pay.request.queue',
+    // 🌟 관리자로부터 승인 결과를 받을 내 큐
+    EVENT_RES_CORE: 'event.res.core.queue'
 };
 
 // 라우팅 키 정의 (메시지가 전달될 주소 이름표)
 const ROUTING_KEYS = {
     PAY_REQUEST: 'pay.request',
-    STATUS_UPDATE: 'res.status.update'
+    STATUS_UPDATE: 'res.status.update',
+    // 🌟 내가 관리자에게 승인 요청을 보낼 때 쓰는 키
+    EVENT_REQ_ADMIN: 'admin.event.request',
+    // 🌟 관리자가 나에게 결과를 보내줄 때 쓰는 키
+    EVENT_RES_CORE: 'event.res.core'
 };
 
 // 모든 서비스가 공용으로 사용할 익스체인지 이름
@@ -37,6 +43,11 @@ const connectRabbitMQ = async () => {
         
         // Direct 방식의 익스체인지를 생성해 (라우팅 키가 정확히 일치해야 함)
         await channel.assertExchange(EXCHANGE, 'direct', { durable: true });
+
+        // 🌟 내 큐 생성 및 바인딩 (관리자가 보내는 응답을 듣기 위해)
+        await channel.assertQueue(QUEUES.EVENT_RES_CORE, { durable: true });
+        await channel.bindQueue(QUEUES.EVENT_RES_CORE, EXCHANGE, ROUTING_KEYS.EVENT_RES_CORE);
+
         console.log("✅ RabbitMQ 채널 및 익스체인지 연결 성공");
     } catch (error) {
         console.error("❌ RabbitMQ 연결 실패:", error);
@@ -57,8 +68,28 @@ const publishToQueue = async (routingKey, message) => {
         EXCHANGE, 
         routingKey, 
         Buffer.from(JSON.stringify(message)), 
-        { persistent: true } // 서버가 꺼져도 메시지가 유지되도록 설정
+        {persistent: true,
+            contentType: 'application/json'} // 서버가 꺼져도 메시지가 유지되도록 설정
     );
 };
 
-module.exports = { connectRabbitMQ, publishToQueue, QUEUES, ROUTING_KEYS, EXCHANGE };
+// 🌟 추가: 관리자 응답을 처리하는 컨슈머 (리스너)
+const consumeAdminResponse = async (callback) => {
+    if (!channel) return;
+    channel.consume(QUEUES.EVENT_RES_CORE, (msg) => {
+        if (msg !== null) {
+            const content = JSON.parse(msg.content.toString());
+            callback(content); // 컨트롤러나 서비스에서 넘겨준 콜백 함수 실행
+            channel.ack(msg);  // 메시지 확인(삭제)
+        }
+    });
+};
+
+module.exports = { 
+    connectRabbitMQ, 
+    publishToQueue, 
+    consumeAdminResponse,
+    QUEUES, 
+    ROUTING_KEYS, 
+    EXCHANGE 
+};

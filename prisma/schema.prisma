@@ -11,23 +11,30 @@ datasource db {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model events {
-  event_id        Int              @id @default(autoincrement())
-  title           String           @db.VarChar(255)
-  artist_name     String?          @db.VarChar(100)
-  event_type      String?          @db.VarChar(50)
+  event_id        Int               @id @default(autoincrement())
+  title           String            @db.VarChar(255)
+  artist_id       BigInt
+  artist_name     String?           @db.VarChar(100)
+  event_type      String?           @db.VarChar(50)
+  description     String?
   price           Int
   total_capacity  Int
   available_seats Int
-  event_date      DateTime         @db.Timestamptz(6)
-  open_time       DateTime         @db.Timestamptz(6)
-  close_time      DateTime         @db.Timestamptz(6)
-  version         Int              @default(0)
-  created_at      DateTime?        @default(now()) @db.Timestamptz(6)
+  event_date      DateTime          @db.Timestamptz(6)
+  open_time       DateTime          @db.Timestamptz(6)
+  close_time      DateTime          @db.Timestamptz(6)
+  approval_status String?           @default("PENDING") @db.VarChar(20)
+  version         Int               @default(0)
+  created_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  deleted_at      DateTime?         @db.Timestamptz(6)
+  event_approvals event_approvals[]
   event_images    event_images[]
   event_locations event_locations?
   reservations    reservations[]
 
   @@index([open_time, close_time], map: "idx_events_open_close")
+  @@index([approval_status], map: "idx_events_approval_status")
   @@schema("res")
 }
 
@@ -37,6 +44,7 @@ model reservations {
   event_id       Int
   member_id      BigInt
   ticket_count   Int
+  booking_fee    Int       @default(0)
   total_price    Int
   ticket_code    String    @unique @db.VarChar(50)
   status         String?   @default("PENDING") @db.VarChar(20)
@@ -71,5 +79,22 @@ model event_locations {
   created_at DateTime? @default(now()) @db.Timestamptz(6)
   events     events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
 
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model event_approvals {
+  approval_id      Int       @id @default(autoincrement())
+  event_id         Int?
+  requester_id     BigInt
+  status           String?   @default("PENDING") @db.VarChar(20)
+  rejection_reason String?
+  event_snapshot   Json
+  admin_id         BigInt?
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  processed_at     DateTime? @db.Timestamptz(6)
+  events           events?   @relation(fields: [event_id], references: [event_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status], map: "idx_approvals_status")
   @@schema("res")
 }
