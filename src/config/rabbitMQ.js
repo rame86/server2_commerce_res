@@ -74,13 +74,30 @@ const publishToQueue = async (routingKey, message) => {
 };
 
 // 🌟 추가: 관리자 응답을 처리하는 컨슈머 (리스너)
+// src/config/rabbitMQ.js 의 consumeAdminResponse 수정
+
 const consumeAdminResponse = async (callback) => {
-    if (!channel) return;
-    channel.consume(QUEUES.EVENT_RES_CORE, (msg) => {
+    // 채널이 아직 없으면 대기하거나 에러 출력
+    if (!channel) {
+        console.error("❌ 채널이 아직 준비되지 않았어. 연결을 기다리는 중...");
+        return;
+    }
+
+    console.log(`📡 [리스너 대기 중] 큐: ${QUEUES.EVENT_RES_CORE}`);
+
+    channel.consume(QUEUES.EVENT_RES_CORE, async (msg) => {
         if (msg !== null) {
-            const content = JSON.parse(msg.content.toString());
-            callback(content); // 컨트롤러나 서비스에서 넘겨준 콜백 함수 실행
-            channel.ack(msg);  // 메시지 확인(삭제)
+            try {
+                const content = JSON.parse(msg.content.toString());
+                console.log("📥 [MQ 수신 성공]:", content); // 🌟 여기가 찍히는지 확인이 제일 중요!
+                
+                await callback(content); 
+                channel.ack(msg);
+            } catch (err) {
+                console.error("❌ 메시지 처리 중 오류:", err);
+                // 오류 시 다시 큐로 넣지 않고 버림 (무한루프 방지)
+                channel.nack(msg, false, false);
+            }
         }
     });
 };
