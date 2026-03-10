@@ -20,7 +20,7 @@ const prisma = new PrismaClient({
 });
 
 // [디버깅 로그] 서버 구동 시 현재 연결된 DB의 호스트 주소를 노출하여 연결 상태를 즉시 확인함
-console.log("📡 현재 연결 시도 중인 DB 주소:", process.env.DATABASE_URL?.split('@')[1] || "주소 없음");
+console.log(`🗄️ [Target] ${process.env.DATABASE_URL?.split('/').pop()?.split('?')[0] || "unknown"} 스키마 사용 중`);
 
 /**
  * [예약 생성 트랜잭션]
