@@ -38,6 +38,7 @@ exports.createReservation = async (req, res) => {
             event_id,
             ticket_count: count,
             total_price: bookingDetail.totalPrice,
+            booking_fee: bookingDetail.bookingFee,
             ticket_code: bookingDetail.ticketCode
         }, member_id);
 

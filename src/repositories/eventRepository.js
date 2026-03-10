@@ -109,38 +109,36 @@ exports.findApprovalById = async (approvalId) => {
 };
 
 /**
- * [승인 데이터 최종 확정 저장]
- * Service에서 넘겨준 트랜잭션(tx) 객체를 그대로 사용해서 원자성을 보장함.
+ * [승인 데이터 최종 확정 (상태 업데이트)]
  */
-exports.confirmEvent = async (tx, eventData, locationData, approvalId, adminId) => {
-    // 1. 실제 공연 생성
-    const newEvent = await tx.events.create({ data: eventData });
-
-    // 2. 위치 정보 생성
-    await tx.event_locations.create({
-        data: { ...locationData, event_id: newEvent.event_id }
+exports.confirmEvent = async (tx, eventId, adminId) => {
+    // 1. events 테이블 승인
+    await tx.events.update({
+        where: { event_id: Number(eventId) },
+        data: { approval_status: 'CONFIRMED' }
     });
 
-    // 3. 신청 대기열 상태 업데이트
-    await tx.event_approvals.update({
-        where: { approval_id: Number(approvalId) },
+    // 2. event_approvals 테이블 승인 (event_id 기준으로 찾아서 업데이트)
+    await tx.event_approvals.updateMany({
+        where: { event_id: Number(eventId) },
         data: { 
             status: 'CONFIRMED', 
-            event_id: newEvent.event_id,
             admin_id: adminId ? BigInt(adminId) : null,
             processed_at: new Date()
         }
     });
-
-    return newEvent;
 };
 
-/**
- * [반려 상태 업데이트]
- */
-exports.updateApprovalFailed = async (approvalId, adminId, reason) => {
-    return await prisma.event_approvals.update({
-        where: { approval_id: Number(approvalId) },
+exports.rejectEvent = async (tx, eventId, adminId, reason) => {
+    // 1. events 테이블 반려
+    await tx.events.update({
+        where: { event_id: Number(eventId) },
+        data: { approval_status: 'FAILED' }
+    });
+
+    // 2. event_approvals 테이블 반려 (event_id 기준)
+    await tx.event_approvals.updateMany({
+        where: { event_id: Number(eventId) },
         data: { 
             status: 'FAILED', 
             rejection_reason: reason,

@@ -57,7 +57,7 @@ exports.validateAndPrepare = async (eventId, count, memberId) => {
          */
         const event = await eventRepository.findEventById(eventId);
         if (!event) throw { status: 404, message: "공연 정보를 찾을 수 없습니다." };
-
+        const bookingFee = count * 1000;
         const totalPrice = (event.price * count) + (count * 1000);
 
         /**
@@ -79,7 +79,7 @@ exports.validateAndPrepare = async (eventId, count, memberId) => {
         const ticketCode = `TKT-${dateStr}-${Math.floor(Math.random() * 9000) + 1000}`;
 
         // [결과 반환] 모든 검증이 끝나면 Controller에서 사용할 최종 예약 명세서를 넘겨줌
-        return { totalPrice, ticketCode, eventTitle: event.title, remainingStock };
+        return { totalPrice, bookingFee, ticketCode, eventTitle: event.title, remainingStock };
 
     } catch (err) {
         /**
@@ -109,6 +109,7 @@ exports.makeReservation = async (resData, memberId) => {
         ticket_count: parseInt(resData.ticket_count, 10),
         member_id: memberId,
         total_price: resData.totalPrice || resData.total_price,
+        booking_fee: resData.bookingFee || resData.booking_fee,
         ticket_code: resData.ticketCode || resData.ticket_code
     };
 

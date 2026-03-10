@@ -63,6 +63,7 @@ exports.createReservationWithTransaction = async (data) => {
                 event_id: data.event_id,
                 member_id: data.member_id,
                 ticket_count: data.ticket_count,
+                booking_fee: data.booking_fee,
                 total_price: data.total_price,
                 ticket_code: data.ticket_code,
                 status: 'PENDING' 

@@ -119,46 +119,23 @@ exports.initEventStock = async (eventId, stockCount) => {
 
 /**
  * [관리자 응답 처리 서비스]
- * 컨슈머로부터 데이터를 받아 성공/실패 로직을 진두지휘함.
  */
 exports.processAdminResponse = async (response) => {
+    // 🌟 핵심: Spring이 approvalId라는 이름으로 돌려줬지만, 실제 값은 우리가 보낸 event_id임
+    const actualEventId = response.approvalId;
     const { approvalId, status, admin_id, rejectionReason } = response;
 
-    // 1. 원본 신청 데이터가 있는지 리포지토리에 물어봄
     const approvalReq = await eventRepository.findApprovalById(approvalId);
     if (!approvalReq) throw new Error(`승인 요청건을 찾을 수 없음: ${approvalId}`);
 
-    if (status === 'CONFIRMED') {
-        const snapshot = approvalReq.event_snapshot;
+    const eventId = approvalReq.event_id;
 
-        // 가공된 데이터 세트 준비
-        const eventData = {
-            title: snapshot.title,
-            artist_id: snapshot.artist_id,
-            artist_name: snapshot.artist_name,
-            event_type: snapshot.event_type,
-            description: snapshot.description,
-            price: snapshot.price,
-            total_capacity: snapshot.total_capacity,
-            available_seats: snapshot.total_capacity,
-            event_date: snapshot.event_date,
-            open_time: snapshot.open_time,
-            close_time: snapshot.close_time,
-            approval_status: 'CONFIRMED'
-        };
-
-        const locationData = {
-            venue: snapshot.venue,
-            address: snapshot.address
-        };
-
-        // 2. 트랜잭션 실행 (리포지토리 호출)
-        return await prisma.$transaction(async (tx) => {
-            return await eventRepository.confirmEvent(tx, eventData, locationData, approvalId, admin_id);
-        });
-
-    } else if (status === 'FAILED') {
-        // 3. 반려 로직 수행
-        return await eventRepository.updateApprovalFailed(approvalId, admin_id, rejectionReason);
-    }
+    // 🌟 핵심: 이미 데이터는 있으므로 Repository를 호출해 두 테이블의 상태만 업데이트!
+    return await prisma.$transaction(async (tx) => {
+        if (status === 'CONFIRMED') {
+            return await eventRepository.confirmEvent(tx, actualEventId, admin_id);
+        } else if (status === 'FAILED') {
+            return await eventRepository.rejectEvent(tx, actualEventId, admin_id, rejectionReason);
+        }
+    });
 };

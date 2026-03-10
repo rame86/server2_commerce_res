@@ -127,7 +127,11 @@ exports.requestEventApproval = async (req, res) => {
     const { requester_id, title, total_capacity, price, description, venue, address, event_date, open_time, close_time, images, artist_id, artist_name, event_type } = req.body;
 
     try {
-        // 1. 관리자 검토용 데이터 스냅샷 생성
+        // 1. 카카오 API로 좌표 추출 (기존 eventService 활용)
+        const coords = await eventService.getCoordinates(address);
+        const lat = coords ? coords.lat : null;
+        const lng = coords ? coords.lng : null;
+
         const eventSnapshot = {
             title, artist_id, artist_name, event_type, description,
             price: parseInt(price, 10),
@@ -136,32 +140,66 @@ exports.requestEventApproval = async (req, res) => {
             images: images || []
         };
 
-        // 2. DB 승인 대기열(event_approvals)에 먼저 저장
-        const approvalReq = await prisma.event_approvals.create({
-            data: {
-                requester_id: BigInt(requester_id),
-                status: 'PENDING',
-                event_snapshot: eventSnapshot
-            }
+        // 2. 🌟 핵심 트랜잭션: 신청 시 events와 event_approvals 둘 다 PENDING으로 동시 저장
+        const { newEvent, approvalReq } = await prisma.$transaction(async (tx) => {
+            // events 먼저 생성 (PENDING)
+            const createdEvent = await tx.events.create({
+                data: {
+                    title, artist_id: BigInt(artist_id), artist_name, event_type, description,
+                    price: parseInt(price, 10),
+                    total_capacity: parseInt(total_capacity, 10),
+                    available_seats: parseInt(total_capacity, 10), // 초기 재고 세팅
+                    event_date: new Date(event_date),
+                    open_time: new Date(open_time),
+                    close_time: new Date(close_time),
+                    approval_status: 'PENDING'
+                }
+            });
+
+            // 위치 정보 생성
+            await tx.event_locations.create({
+                data: {
+                    event_id: createdEvent.event_id,
+                    venue, address, latitude: lat, longitude: lng
+                }
+            });
+
+            // event_approvals 생성 (매핑)
+            const createdApproval = await tx.event_approvals.create({
+                data: {
+                    event_id: createdEvent.event_id,
+                    requester_id: BigInt(requester_id),
+                    status: 'PENDING',
+                    event_snapshot: eventSnapshot
+                }
+            });
+
+            // events 테이블에 생성된 approval_id 업데이트 (연결)
+            await tx.events.update({
+                where: { event_id: createdEvent.event_id },
+                data: { approval_id: createdApproval.approval_id }
+            });
+
+            return { newEvent: createdEvent, approvalReq: createdApproval };
         });
 
-        // 3. 🚀 Java DTO 형식에 맞춰 관리자(Core)에게 발송
+        // 3. 🚀 Java DTO 형식에 맞춰 관리자(Core)에게 발송 (eventId 포함됨!)
         const eventResultDTO = {
-            approvalId: Number(approvalReq.approval_id), // Long 매칭
-            eventId: null,                               // Long 매칭
-            requesterId: Number(requester_id),           // Long 매칭 (BigInt 대신 Number 사용 권장)
-            status: 'PENDING',                           // String 매칭
-            eventTitle: title,                           // String 매칭
-            eventSnapshot: eventSnapshot,                // 🌟 관리자가 상세 내용을 바로 볼 수 있게 스냅샷 추가
-            rejectionReason: null,                       // String 매칭
-            createdAt: approvalReq.created_at.toISOString() // 🌟 'created_at'이 아니라 'createdAt'이어야 함!
+            approvalId: Number(newEvent.event_id),         // 꼼수 적용: 이름은 approvalId지만 실제값은 event_id
+            requesterId: Number(requester_id),             // 신청자 ID
+            status: 'PENDING',                             // 초기 승인 대기 상태
+            eventTitle: title,                             // 공연 제목
+            rejectionReason: null,                         // 초기엔 거절 사유 없음
+            createdAt: approvalReq.created_at.toISOString(), // 생성일 (ISO 8601 String 포맷)  
+            eventStartDate: new Date(event_date).toISOString(), // Java에서 String으로 받기로 했으니 ISO 문자열로 변환
+            location: venue,                                    // 장소 (필요하면 `${venue} ${address}` 형태로 합쳐도 됨)
+            price: Number(price)                                // 금액 (Long 타입이므로 JS의 Number로 전송)
         };
 
-        // 상세 정보(data)와 DTO를 함께 전송
         await mq.publishToQueue(mq.ROUTING_KEYS.EVENT_REQ_ADMIN, eventResultDTO);
-        console.log(`📤 [관리자 전송 성공] ID: ${eventResultDTO.approvalId}, 제목: ${eventResultDTO.eventTitle}`);
+        console.log(`📤 [관리자 전송 성공] ID: ${eventResultDTO.approvalId}, EventID: ${eventResultDTO.eventId}`);
         
-        res.status(202).json({ message: "신청 완료", approvalId: eventResultDTO.approvalId });
+        res.status(202).json({ message: "신청 완료", approvalId: eventResultDTO.approvalId, eventId: eventResultDTO.eventId });
     } catch (error) {
         console.error("❌ 승인 요청 실패:", error.message);
         res.status(500).json({ message: "신청 중 오류 발생" });
