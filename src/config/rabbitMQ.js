@@ -2,34 +2,49 @@
 const amqp = require('amqplib');
 require('dotenv').config();
 
-let channel = null;
+let connection = null; // 서비스 전체에서 공유할 물리적 연결(TCP)
+let channel = null;    // 메시지 발행(Publish)을 담당하는 공용 채널
 
-// 큐 이름 정의 (중앙 관리로 하드코딩 방지)
+/**
+ * 큐(Queue) 이름 정의
+ * 메시지가 실제로 쌓여서 처리를 기다리는 물리적인 저장소야.
+ */
 const QUEUES = {
+    // 사용자의 예약 요청 메시지가 쌓이는 저장소
     RESERVATION: 'reservation.queue',
+    // 사용자의 환불 신청 데이터가 쌓이는 저장소
     REFUND_REQUEST: 'refund.request.queue',
+    // 결제 결과에 따른 예약 상태 업데이트 메시지가 대기하는 저장소
     STATUS_UPDATE: 'res.status.update.queue',
+    // 결제 실패 등 비상 상황 발생 시 재고 복구(Rollback) 메시지가 쌓이는 저장소
     CANCEL: 'reservation.cancel.queue',
+    // 결제 서버로 보낼 결제 요청 데이터가 대기하는 저장소
     PAY_REQUEST: 'pay.request.queue',
-    // 🌟 관리자로부터 승인 결과를 받을 내 큐
+    // 🌟 관리자가 처리한 이벤트 승인/반려 결과가 나(Core)에게 들어오는 저장소
     EVENT_RES_CORE: 'event.res.core.queue'
 };
 
-// 라우팅 키 정의 (메시지가 전달될 주소 이름표)
+/**
+ * 라우팅 키(Routing Key) 정의
+ * 익스체인지(Exchange)가 메시지를 어떤 큐로 배달할지 결정하는 '우편 주소'야.
+ */
 const ROUTING_KEYS = {
+    // 메시지를 결제 요청 큐로 정확히 배달하기 위한 주소
     PAY_REQUEST: 'pay.request',
+    // 결제 완료/실패 상태 정보를 전달하기 위한 주소
     STATUS_UPDATE: 'res.status.update',
-    // 🌟 내가 관리자에게 승인 요청을 보낼 때 쓰는 키
+    // 🌟 내가 관리자(Admin)에게 "이 이벤트 검토해줘"라고 요청할 때 사용하는 주소
     EVENT_REQ_ADMIN: 'admin.event.request',
-    // 🌟 관리자가 나에게 결과를 보내줄 때 쓰는 키
+    // 🌟 관리자가 검토를 마치고 나(Core)에게 결과를 돌려줄 때 사용하는 주소
     EVENT_RES_CORE: 'event.res.core'
 };
 
-// 모든 서비스가 공용으로 사용할 익스체인지 이름
+// 메시지를 분류해서 각 큐로 전달하는 중앙 우체국(Exchange) 이름
 const EXCHANGE = 'msa.direct.exchange';
 
 /**
- * RabbitMQ 서버에 연결하고 채널 및 익스체인지를 초기화해.
+ * [RabbitMQ 중앙 연결] 
+ * 서버와 커넥션을 맺고 메시지 발행을 위한 기본 채널을 초기화해.
  */
 const connectRabbitMQ = async () => {
     try {
@@ -38,74 +53,52 @@ const connectRabbitMQ = async () => {
         const mqHost = process.env.RABBITMQ_HOST;
         const rabbitUrl = `amqp://${mqUser}:${mqPass}@${mqHost}:5672`;
 
-        const connection = await amqp.connect(rabbitUrl);
+        // 1. RabbitMQ 서버와 연결 생성
+        connection = await amqp.connect(rabbitUrl);
+        // 2. 공용 발행 채널 생성
         channel = await connection.createChannel();
         
-        // Direct 방식의 익스체인지를 생성해 (라우팅 키가 정확히 일치해야 함)
+        // 3. Direct 방식의 익스체인지 선언 (주소와 큐가 1:1로 매칭됨)
         await channel.assertExchange(EXCHANGE, 'direct', { durable: true });
 
-        // 🌟 내 큐 생성 및 바인딩 (관리자가 보내는 응답을 듣기 위해)
-        await channel.assertQueue(QUEUES.EVENT_RES_CORE, { durable: true });
-        await channel.bindQueue(QUEUES.EVENT_RES_CORE, EXCHANGE, ROUTING_KEYS.EVENT_RES_CORE);
-
-        console.log("✅ RabbitMQ 채널 및 익스체인지 연결 성공");
+        console.log("✅ RabbitMQ 커넥션 및 익스체인지 연결 성공");
     } catch (error) {
         console.error("❌ RabbitMQ 연결 실패:", error);
     }
 };
 
 /**
- * 메시지를 특정 라우팅 키를 가진 익스체인지로 발행해.
+ * [공통 메시지 발행] 
+ * 특정 라우팅 키(주소)를 붙여서 메시지를 익스체인지로 전송해.
  */
 const publishToQueue = async (routingKey, message) => {
     if (!channel) {
-        console.error("❌ RabbitMQ 채널이 준비되지 않아 메시지를 보낼 수 없어.");
+        console.error("❌ RabbitMQ 채널이 준비되지 않았어.");
         return;
     }
     
-    // 객체를 버퍼(Buffer)로 변환해서 전송해
+    // JSON 데이터를 버퍼로 변환하여 전송 (서버 재시작 시에도 메시지 보존 설정)
     channel.publish(
         EXCHANGE, 
         routingKey, 
         Buffer.from(JSON.stringify(message)), 
-        {persistent: true,
-            contentType: 'application/json'} // 서버가 꺼져도 메시지가 유지되도록 설정
+        {
+            persistent: true, 
+            contentType: 'application/json'
+        }
     );
 };
 
-// 🌟 추가: 관리자 응답을 처리하는 컨슈머 (리스너)
-// src/config/rabbitMQ.js 의 consumeAdminResponse 수정
-
-const consumeAdminResponse = async (callback) => {
-    // 채널이 아직 없으면 대기하거나 에러 출력
-    if (!channel) {
-        console.error("❌ 채널이 아직 준비되지 않았어. 연결을 기다리는 중...");
-        return;
-    }
-
-    console.log(`📡 [리스너 대기 중] 큐: ${QUEUES.EVENT_RES_CORE}`);
-
-    channel.consume(QUEUES.EVENT_RES_CORE, async (msg) => {
-        if (msg !== null) {
-            try {
-                const content = JSON.parse(msg.content.toString());
-                console.log("📥 [MQ 수신 성공]:", content); // 🌟 여기가 찍히는지 확인이 제일 중요!
-                
-                await callback(content); 
-                channel.ack(msg);
-            } catch (err) {
-                console.error("❌ 메시지 처리 중 오류:", err);
-                // 오류 시 다시 큐로 넣지 않고 버림 (무한루프 방지)
-                channel.nack(msg, false, false);
-            }
-        }
-    });
-};
+/**
+ * [커넥션 공유 함수] 
+ * 각 컨슈머(Listener)들이 개별 채널을 생성할 수 있도록 현재 커넥션을 반환해.
+ */
+const getConnection = () => connection;
 
 module.exports = { 
     connectRabbitMQ, 
     publishToQueue, 
-    consumeAdminResponse,
+    getConnection, 
     QUEUES, 
     ROUTING_KEYS, 
     EXCHANGE 

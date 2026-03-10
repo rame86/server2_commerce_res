@@ -152,6 +152,7 @@ exports.requestEventApproval = async (req, res) => {
             requesterId: Number(requester_id),           // Long 매칭 (BigInt 대신 Number 사용 권장)
             status: 'PENDING',                           // String 매칭
             eventTitle: title,                           // String 매칭
+            eventSnapshot: eventSnapshot,                // 🌟 관리자가 상세 내용을 바로 볼 수 있게 스냅샷 추가
             rejectionReason: null,                       // String 매칭
             createdAt: approvalReq.created_at.toISOString() // 🌟 'created_at'이 아니라 'createdAt'이어야 함!
         };
