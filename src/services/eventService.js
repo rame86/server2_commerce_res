@@ -51,50 +51,37 @@ exports.warmupAllEventsToRedis = async () => {
     }
 };
 
-/**
- * [좌표 변환] 카카오 REST API를 사용하여 주소를 위경도로 변환
- * -------------------------------------------------------------------------
- * 목적: 주소(텍스트)만 있는 데이터를 기반으로 지도에 핀을 찍기 위한 위/경도(숫자)를 획득함.
- * -------------------------------------------------------------------------
- */
-
 exports.getCoordinates = async (address) => {
-    // [환경 변수 활용] 보안을 위해 API 키는 소스코드에 하드코딩하지 않고 .env 파일에서 가져옴
-    const KAKAO_API_KEY = process.env.KAKAO_REST_API_KEY; 
-    
-    /**
-     * https://namu.wiki/w/%EC%9D%B8%EC%BD%94%EB%94%A9 주소 문자열에 포함된 공백이나 한글이 깨지지 않도록 
-     * encodeURI를 사용하여 표준 URL 형식으로 변환함.
-     */
-    const url = `https://dapi.kakao.com/v2/local/search/address.json?query=${encodeURI(address)}`;
-
     try {
-        // [외부 API 호출] axios를 사용하여 카카오 서버에 GET 요청을 보내고 인증 헤더를 첨부함
+        const url = process.env.KAKAO_API_URL;
+        
+        // 🌟 [최종 병기] 모든 종류의 공백, 줄바꿈, 탭, 제어문자를 싹 다 제거
+        const rawKey = process.env.KAKAO_REST_API_KEY || "";
+        const cleanKey = rawKey.replace(/[\s\t\n\r]/g, "").trim(); 
+
+        if (!cleanKey) {
+            console.error("❌ KAKAO_REST_API_KEY가 비어있어!");
+            return null;
+        }
+
         const response = await axios.get(url, {
-            headers: { Authorization: `KakaoAK ${KAKAO_API_KEY}` }
+            params: { query: address },
+            headers: {
+                // 'KakaoAK ' 뒤에 공백 한 칸 확인!
+                'Authorization': `KakaoAK ${cleanKey}`
+            }
         });
 
-        /**
-         * [데이터 정제]
-         * 결과 배열 중 가장 유사도가 높은 첫 번째 검색 결과(documents[0])를 추출함.
-         */
-        const document = response.data.documents[0];
-        // 검색 결과가 없는 경우 상위 로직에서 대응할 수 있도록 null을 반환함
-        if (!document) return null;
+        if (response.data.documents && response.data.documents.length > 0) {
+            const { x, y } = response.data.documents[0];
+            return { lat: parseFloat(y), lng: parseFloat(x) };
+        }
+        return null;
 
-        /**
-         * [형변환 및 반환]
-         * 카카오 API가 반환하는 문자열 좌표(y=위도, x=경도)를 
-         * DB 저장 및 연산이 용이하도록 실수형(Float)으로 파싱하여 객체로 반환함.
-         */
-        return {
-            lat: parseFloat(document.y),
-            lng: parseFloat(document.x) 
-        };
     } catch (error) {
-        // [방어 코드] API 장애 시 전체 로직이 멈추지 않도록 에러 로깅 후 null을 반환하여 유연하게 대처함
-        console.error("❌ 카카오 API 호출 실패:", error.message);
-        return null; 
+        // 401 에러가 나면 cleanKey를 한 번 더 의심해야 해
+        console.error("❌ 카카오 API 호출 최종 실패:", error.response?.data || error.message);
+        throw error;
     }
 };
 
@@ -121,16 +108,20 @@ exports.initEventStock = async (eventId, stockCount) => {
  * [관리자 응답 처리 서비스]
  */
 exports.processAdminResponse = async (response) => {
-    // 🌟 핵심: Spring이 approvalId라는 이름으로 돌려줬지만, 실제 값은 우리가 보낸 event_id임
-    const actualEventId = response.approvalId;
-    const { approvalId, status, admin_id, rejectionReason } = response;
+    // 🌟 1. Spring이 보낸 'eventId'를 먼저 잡고, 없으면 'approvalId'를 잡도록 수정!
+    const incomingId = response.eventId || response.approvalId;
+    const { status, admin_id, rejectionReason } = response;
 
-    const approvalReq = await eventRepository.findApprovalById(approvalId);
-    if (!approvalReq) throw new Error(`승인 요청건을 찾을 수 없음: ${approvalId}`);
+    // 🌟 2. 위에서 잡은 incomingId가 있는지 확인 (아까 여기서 에러 난 거야)
+    if (!incomingId) throw new Error("ID(eventId 또는 approvalId)가 전달되지 않았어!");
 
-    const eventId = approvalReq.event_id;
+    // 🌟 3. Repository 호출할 때도 incomingId를 사용
+    const approvalReq = await eventRepository.findApprovalById(incomingId);
+    if (!approvalReq) throw new Error(`승인 요청건을 찾을 수 없음: ${incomingId}`);
 
-    // 🌟 핵심: 이미 데이터는 있으므로 Repository를 호출해 두 테이블의 상태만 업데이트!
+    const actualEventId = approvalReq.event_id;
+
+    // 트랜잭션 시작
     return await prisma.$transaction(async (tx) => {
         if (status === 'CONFIRMED') {
             return await eventRepository.confirmEvent(tx, actualEventId, admin_id);

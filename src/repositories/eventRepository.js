@@ -102,9 +102,16 @@ exports.findAllEvents = async () => {
 /**
  * [승인 대기열 조회]
  */
-exports.findApprovalById = async (approvalId) => {
-    return await prisma.event_approvals.findUnique({
-        where: { approval_id: Number(approvalId) }
+exports.findApprovalById = async (eventId) => {
+    if (!eventId) {
+        throw new Error("eventId(approvalId)가 전달되지 않았어!");
+    }
+
+    // 🌟 findUnique는 PK로만 찾을 수 있어서, event_id로 찾으려면 findFirst를 써야 해!
+    return await prisma.event_approvals.findFirst({
+        where: {
+            event_id: parseInt(eventId, 10) // Spring에서 온 approvalId를 event_id에 매칭
+        }
     });
 };
 
