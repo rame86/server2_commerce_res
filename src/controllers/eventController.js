@@ -120,14 +120,30 @@ exports.getEventLocation = async (req, res) => {
     }
 };
 
+// 🌟 자바 LocalDateTime이 "진짜" 좋아하는 표준 포맷 (T 포함, Z 미포함)
+const formatToSpring = (dateInput) => {
+    const d = new Date(dateInput);
+    const pad = (n) => n < 10 ? '0' + n : n;
+    
+    // 날짜와 시간 사이에 'T'를 명시적으로 넣어줌
+    return d.getFullYear() + '-' +
+           pad(d.getMonth() + 1) + '-' +
+           pad(d.getDate()) + 'T' +  // 👈 여기가 핵심! 공백 대신 'T'
+           pad(d.getHours()) + ':' +
+           pad(d.getMinutes()) + ':' +
+           pad(d.getSeconds());
+};
 /**
  * [4] 🌟 공연 등록 신청 (관리자 승인 요청)
+ */
+/**
+ * [4] 🌟 공연 등록 신청 (순서 및 에러 해결 버전)
  */
 exports.requestEventApproval = async (req, res) => {
     const { requester_id, title, total_capacity, price, description, venue, address, event_date, open_time, close_time, images, artist_id, artist_name, event_type } = req.body;
 
     try {
-        // 1. 카카오 API로 좌표 추출 (기존 eventService 활용)
+        // 1. 카카오 API로 좌표 추출
         const coords = await eventService.getCoordinates(address);
         const lat = coords ? coords.lat : null;
         const lng = coords ? coords.lng : null;
@@ -140,15 +156,14 @@ exports.requestEventApproval = async (req, res) => {
             images: images || []
         };
 
-        // 2. 🌟 핵심 트랜잭션: 신청 시 events와 event_approvals 둘 다 PENDING으로 동시 저장
+        // 2. 🌟 핵심 트랜잭션
         const { newEvent, approvalReq } = await prisma.$transaction(async (tx) => {
-            // events 먼저 생성 (PENDING)
             const createdEvent = await tx.events.create({
                 data: {
                     title, artist_id: BigInt(artist_id), artist_name, event_type, description,
                     price: parseInt(price, 10),
                     total_capacity: parseInt(total_capacity, 10),
-                    available_seats: parseInt(total_capacity, 10), // 초기 재고 세팅
+                    available_seats: parseInt(total_capacity, 10),
                     event_date: new Date(event_date),
                     open_time: new Date(open_time),
                     close_time: new Date(close_time),
@@ -156,7 +171,6 @@ exports.requestEventApproval = async (req, res) => {
                 }
             });
 
-            // 위치 정보 생성
             await tx.event_locations.create({
                 data: {
                     event_id: createdEvent.event_id,
@@ -164,7 +178,6 @@ exports.requestEventApproval = async (req, res) => {
                 }
             });
 
-            // event_approvals 생성 (매핑)
             const createdApproval = await tx.event_approvals.create({
                 data: {
                     event_id: createdEvent.event_id,
@@ -174,7 +187,6 @@ exports.requestEventApproval = async (req, res) => {
                 }
             });
 
-            // events 테이블에 생성된 approval_id 업데이트 (연결)
             await tx.events.update({
                 where: { event_id: createdEvent.event_id },
                 data: { approval_id: createdApproval.approval_id }
@@ -183,26 +195,33 @@ exports.requestEventApproval = async (req, res) => {
             return { newEvent: createdEvent, approvalReq: createdApproval };
         });
 
-        // 3. 🚀 Java DTO 형식에 맞춰 관리자(Core)에게 발송 (eventId 포함됨!)
+        // 3. 🚀 Java DTO 조립 (반드시 사용하기 전에 선언!)
         const eventResultDTO = {
-            approvalId: Number(newEvent.event_id),         // 꼼수 적용: 이름은 approvalId지만 실제값은 event_id
-            requesterId: Number(requester_id),             // 신청자 ID
-            status: 'PENDING',                             // 초기 승인 대기 상태
-            eventTitle: title,                             // 공연 제목
-            rejectionReason: null,                         // 초기엔 거절 사유 없음
-            createdAt: approvalReq.created_at.toISOString(), // 생성일 (ISO 8601 String 포맷)  
-            eventStartDate: new Date(event_date).toISOString(), // Java에서 String으로 받기로 했으니 ISO 문자열로 변환
-            location: venue,                                    // 장소 (필요하면 `${venue} ${address}` 형태로 합쳐도 됨)
-            price: Number(price)                                // 금액 (Long 타입이므로 JS의 Number로 전송)
+            approvalId: Number(newEvent.event_id), 
+            requesterId: Number(requester_id), 
+            status: 'PENDING',
+            eventTitle: title,
+            rejectionReason: null,
+            createdAt: formatToSpring(approvalReq.created_at),
+            eventStartDate: formatToSpring(event_date),
+            location: venue,
+            price: Number(price)
         };
 
+        // 4. RabbitMQ 발송
         await mq.publishToQueue(mq.ROUTING_KEYS.EVENT_REQ_ADMIN, eventResultDTO);
-        console.log(`📤 [관리자 전송 성공] ID: ${eventResultDTO.approvalId}, EventID: ${eventResultDTO.eventId}`);
+
+        // 5. 최종 응답 및 로그 (이제 eventResultDTO를 마음껏 써도 돼!)
+        console.log(`📤 [관리자 전송 성공] 보낸 ID(approvalId): ${eventResultDTO.approvalId}, 제목: ${eventResultDTO.eventTitle}`);
         
-        res.status(202).json({ message: "신청 완료", approvalId: eventResultDTO.approvalId, eventId: eventResultDTO.eventId });
+        res.status(202).json({ 
+            message: "신청 완료", 
+            approvalId: eventResultDTO.approvalId 
+        });
+
     } catch (error) {
         console.error("❌ 승인 요청 실패:", error.message);
-        res.status(500).json({ message: "신청 중 오류 발생" });
+        res.status(500).json({ message: `신청 실패: ${error.message}` });
     }
 };
 

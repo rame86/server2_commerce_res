@@ -37,7 +37,8 @@ async function startEventResponseConsumer() {
             try {
                 // 5. [데이터 역직렬화] Buffer 형태의 메시지 내용을 JSON 객체로 파싱
                 const response = JSON.parse(msg.content.toString());
-                console.log(`📩 [수신] 관리자 응답 도착: ID ${response.approvalId}, 상태: ${response.status}`);
+                const targetId = response.eventId || response.approvalId;
+                console.log(`📩 [수신] 관리자 응답 도착: ID ${targetId}, 상태: ${response.status}`);
                 
                 // 6. [서비스 레이어 위임] 파싱된 데이터를 가지고 실제 DB 업데이트(이벤트 생성/반려 처리) 수행
                 // eventService.processAdminResponse가 실제 비즈니스 로직의 핵심임
