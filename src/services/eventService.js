@@ -1,131 +1,138 @@
-// src/services/eventService.js
 const axios = require('axios');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const redis = require('../config/redisClient');
 const eventRepository = require('../repositories/eventRepository');
+const { SCALE_POLICIES } = require('../constants/policy'); // 규모별 정책 상수 (S, M, L)
 
 /**
  * [전체 이벤트 재고 Redis Warm-up]
- * -------------------------------------------------------------------------
- * 목적: 고트래픽 티켓팅 오픈 시 DB 부하를 원천 차단하기 위해, 
- * 미리 DB의 재고 데이터를 고성능 인메모리 DB인 Redis로 복사해두는 작업임.
- * -------------------------------------------------------------------------
+ * 티켓 오픈 시 DB 부하를 줄이기 위해 승인된 공연의 재고를 Redis에 미리 로드함
  */
 exports.warmupAllEventsToRedis = async () => {
     try {
-        /**
-         * [데이터 일관성 보장: 초기화]
-         * DB와 Redis의 데이터가 꼬이는 것을 방지하기 위해, 
-         * 동기화 전 기존 Redis에 저장된 낡은 재고 데이터를 모두 삭제함.
-         */
+        // 데이터 정합성을 위해 Redis 초기화 후 재등록
         await redis.flushAll(); 
         console.log("🧹 [Redis] 기존 재고 데이터를 모두 삭제했습니다.");
 
-        /**
-         * [필요 데이터 최소 조회]
-         * 모든 필드를 조회하지 않고, 'event_id'와 'available_seats'만 select하여 
-         * DB 부하 및 메모리 사용량을 최적화함.
-         */
+        // 승인된 공연의 잔여석 정보만 최소한으로 조회
         const events = await prisma.events.findMany({
-            where: { approval_status: 'CONFIRMED' }, // 🌟 이 줄을 추가해!
+            where: { approval_status: 'CONFIRMED' },
             select: { event_id: true, available_seats: true }
         });
 
-        /**
-         * [반복 동기화]
-         * 조회된 모든 공연에 대해 반복문을 돌며 Redis에 '키-값' 형태로 재고를 저장함.
-         * 키 형식: 'event:stock:{id}' -> 이후 resService에서 이 키로 선차감을 수행함.
-         */
+        // Redis에 'event:stock:ID' 키로 재고 저장
         for (const event of events) {
             const stockKey = `event:stock:${event.event_id}`;
-            // 각 공연의 실제 DB 잔여석 수량을 Redis 메모리에 세팅함
             await redis.set(stockKey, event.available_seats);
         }
 
-        console.log(`🚀 [Warm-up] DB 기반으로 ${events.length}개 이벤트 재고 동기화 완료!`);
+        console.log(`🚀 [Warm-up] ${events.length}개 이벤트 재고 동기화 완료!`);
     } catch (err) {
-        // [예외 전파] 에러 발생 시 로그를 남기고 상위 레이어(Controller)로 에러를 던져 적절한 응답을 유도함
         console.error("❌ Warm-up 중 오류 발생:", err);
         throw err; 
     }
 };
 
+/**
+ * [카카오 API 좌표 변환]
+ * -------------------------------------------------------------------------
+ * 목적: 텍스트 주소를 위도(Lat)와 경도(Lng) 좌표로 변환함.
+ * 특징: .env 설정 시 발생할 수 있는 키값의 공백/줄바꿈 문자를 정규식으로 원천 차단함.
+ * -------------------------------------------------------------------------
+ */
 exports.getCoordinates = async (address) => {
     try {
         const url = process.env.KAKAO_API_URL;
-        
-        // 🌟 [최종 병기] 모든 종류의 공백, 줄바꿈, 탭, 제어문자를 싹 다 제거
         const rawKey = process.env.KAKAO_REST_API_KEY || "";
+        
+        // [방어 코드] API 키에 포함될 수 있는 모든 공백, 탭, 줄바꿈(\n, \r)을 제거하여 인증 오류 방지
         const cleanKey = rawKey.replace(/[\s\t\n\r]/g, "").trim(); 
 
+        // [유효성 검증] API 키가 비어있을 경우 호출을 중단하고 에러 로그 출력
         if (!cleanKey) {
-            console.error("❌ KAKAO_REST_API_KEY가 비어있어!");
+            console.error("❌ KAKAO_REST_API_KEY 누락: .env 파일을 확인하세요.");
             return null;
         }
 
+        /**
+         * [API 호출] Axios를 사용하여 카카오 로컬 API 실행
+         * Authorization 헤더 형식: KakaoAK {REST_API_KEY}
+         */
         const response = await axios.get(url, {
             params: { query: address },
-            headers: {
-                // 'KakaoAK ' 뒤에 공백 한 칸 확인!
-                'Authorization': `KakaoAK ${cleanKey}`
-            }
+            headers: { 'Authorization': `KakaoAK ${cleanKey}` }
         });
 
+        /**
+         * [데이터 파싱] 
+         * 검색 결과(documents)가 존재하면 첫 번째 결과의 좌표를 반환함.
+         * x: 경도(Longitude), y: 위도(Latitude) -> 우리 시스템 형식으로 변환
+         */
         if (response.data.documents && response.data.documents.length > 0) {
             const { x, y } = response.data.documents[0];
             return { lat: parseFloat(y), lng: parseFloat(x) };
         }
+
+        // 검색 결과가 없는 경우
         return null;
 
     } catch (error) {
-        // 401 에러가 나면 cleanKey를 한 번 더 의심해야 해
-        console.error("❌ 카카오 API 호출 최종 실패:", error.response?.data || error.message);
+        // [에러 핸들링] 네트워크 문제나 잘못된 API 키 입력 시 예외 처리
+        console.error("❌ 카카오 API 호출 실패:", error.message);
         throw error;
     }
 };
 
 /**
  * [관리자용: Redis 단일 재고 세팅]
- * -------------------------------------------------------------------------
- * 목적: 특정 이벤트의 재고만 수동으로 조절하거나, 테스트 시 특정 수량으로 세팅할 때 사용함.
- * -------------------------------------------------------------------------
  */
 exports.initEventStock = async (eventId, stockCount) => {
-    // [식별자 구성] Redis 표준 키 컨벤션을 유지함
     const key = `event:stock:${eventId}`;
-    
-    /**
-     * [메모리 쓰기]
-     * 지정된 이벤트 ID에 대해 입력받은 수량(stockCount)만큼 Redis 재고를 즉시 덮어씀.
-     */
     await redis.set(key, stockCount);
-    
-    return { eventId, stockCount };
+    return { event_id: eventId, stock_count: stockCount };
 };
 
 /**
  * [관리자 응답 처리 서비스]
+ * 관리자의 승인/거절 신호를 처리하며, 승인 시 규모별 정산 정책을 자동 생성함
  */
 exports.processAdminResponse = async (response) => {
-    // 🌟 1. Spring이 보낸 'eventId'를 먼저 잡고, 없으면 'approvalId'를 잡도록 수정!
     const incomingId = response.eventId || response.approvalId;
     const { status, admin_id, rejectionReason } = response;
 
-    // 🌟 2. 위에서 잡은 incomingId가 있는지 확인 (아까 여기서 에러 난 거야)
-    if (!incomingId) throw new Error("ID(eventId 또는 approvalId)가 전달되지 않았어!");
+    if (!incomingId) throw new Error("ID가 전달되지 않았음");
 
-    // 🌟 3. Repository 호출할 때도 incomingId를 사용
+    // 1. 승인 요청 기록이 존재하는지 먼저 확인
     const approvalReq = await eventRepository.findApprovalById(incomingId);
     if (!approvalReq) throw new Error(`승인 요청건을 찾을 수 없음: ${incomingId}`);
 
     const actualEventId = approvalReq.event_id;
 
-    // 트랜잭션 시작
+    // 2. 트랜잭션 처리: 공연 상태 변경과 수수료 정책 저장을 일관되게 처리
     return await prisma.$transaction(async (tx) => {
         if (status === 'CONFIRMED') {
-            return await eventRepository.confirmEvent(tx, actualEventId, admin_id);
+            // 공연 상태를 'CONFIRMED'로 업데이트하고 업데이트된 정보를 가져옴
+            const updatedEvent = await eventRepository.confirmEvent(tx, actualEventId, admin_id);
+
+            // [자동화 로직] 좌석 수 기준(total_capacity)으로 정책(S/M/L) 자동 결정
+            const policy = SCALE_POLICIES.find(p => updatedEvent.total_capacity >= p.min);
+
+            // 결정된 정책(등급, 정산주기, 수수료율)을 정책 테이블에 저장
+            await tx.event_fee_policies.create({
+                data: {
+                    event_id: actualEventId,
+                    scale_group: policy.group,
+                    settlement_type: policy.type,
+                    sales_commission_rate: policy.rate
+                }
+            });
+
+            console.log(`✨ [자동화] 공연 ${actualEventId}: ${policy.group}그룹 정책 수립`);
+            return updatedEvent;
+
         } else if (status === 'FAILED') {
+            // 거절 처리 (rejectionReason 포함)
             return await eventRepository.rejectEvent(tx, actualEventId, admin_id, rejectionReason);
         }
     });

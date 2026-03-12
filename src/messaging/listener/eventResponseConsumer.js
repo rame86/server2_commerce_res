@@ -17,13 +17,16 @@ async function startEventResponseConsumer() {
         // 2. [채널 생성] 관리자 응답 처리만을 위한 독립적인 논리 통로(Channel)를 개설
         const channel = await connection.createChannel();
 
-        // 3. [인프라 선언] 관리자로부터 결과를 받을 큐(EVENT_RES_CORE)를 생성 (durable: 데이터 유지)
+        // 3. [큐 확인] 관리자가 보낸 답장을 담아둘 우체통(EVENT_RES_CORE)이 있는지 확인
+        // durable: true 설정으로 메시지가 유실되지 않도록 안전하게 보관함
         await channel.assertQueue(QUEUES.EVENT_RES_CORE, { durable: true });
 
-        // 4. [바인딩 설정] 우체국(Exchange)과 큐를 'event.res.core'라는 주소표(Routing Key)로 연결
-        // -> 관리자가 이 주소로 답장을 보내면 무조건 이 큐로 들어오게 됨
+         /* 4. [바인딩 설정] 
+         * 우체국(Exchange)과 큐를 'event.res.core'라는 주소표(Routing Key)로 연결
+         * 관리자가 이 주소로 답장을 보내면 우리 우체통으로 쏙 들어오게 됨*/
         await channel.bindQueue(QUEUES.EVENT_RES_CORE, EXCHANGE, ROUTING_KEYS.EVENT_RES_CORE);
 
+        // 대기 시작 로그 출력
         console.log(`📡 [Admin Response Consumer] 대기 중: ${QUEUES.EVENT_RES_CORE}`);
 
         /**
@@ -37,6 +40,7 @@ async function startEventResponseConsumer() {
             try {
                 // 5. [데이터 역직렬화] Buffer 형태의 메시지 내용을 JSON 객체로 파싱
                 const response = JSON.parse(msg.content.toString());
+                // 메시지 안에 담긴 이벤트 ID(또는 승인 ID)를 추출
                 const targetId = response.eventId || response.approvalId;
                 console.log(`📩 [수신] 관리자 응답 도착: ID ${targetId}, 상태: ${response.status}`);
                 

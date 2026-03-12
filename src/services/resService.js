@@ -1,5 +1,6 @@
 // src/services/resService.js
 require('dotenv').config();
+        
 const resRepository = require('../repositories/resRepository');
 const eventRepository = require('../repositories/eventRepository');
 const redis = require('../config/redisClient');
@@ -12,6 +13,11 @@ const redis = require('../config/redisClient');
  * -------------------------------------------------------------------------
  */
 exports.validateAndPrepare = async (eventId, count, memberId) => {
+    // 🌟 수량 제한 로직: 2개 초과 시 바로 에러 발생
+    if (count > 2) {
+        throw { status: 400, message: "티켓은 1인당 최대 2매까지만 예매 가능합니다." };
+    }
+
     // [식별자 구성] 해당 공연의 Redis 재고 키를 생성함
     const stockKey = `event:stock:${eventId}`;
     
@@ -57,6 +63,12 @@ exports.validateAndPrepare = async (eventId, count, memberId) => {
          */
         const event = await eventRepository.findEventById(eventId);
         if (!event) throw { status: 404, message: "공연 정보를 찾을 수 없습니다." };
+        
+        // 🌟 [추가] 컨트롤러에 넘겨줄 아티스트 판매 수수료율을 DB에서 조회함
+        // DB 직접 찌르지 않고 레포지토리 함수 호출!
+        const feePolicy = await eventRepository.getFeePolicy(eventId);
+        const salesCommissionRate = feePolicy ? feePolicy.sales_commission_rate : 0; // 정책이 없으면 안전하게 0 처리
+
         const bookingFee = count * 1000;
         const totalPrice = (event.price * count) + (count * 1000);
 
@@ -79,7 +91,17 @@ exports.validateAndPrepare = async (eventId, count, memberId) => {
         const ticketCode = `TKT-${dateStr}-${Math.floor(Math.random() * 9000) + 1000}`;
 
         // [결과 반환] 모든 검증이 끝나면 Controller에서 사용할 최종 예약 명세서를 넘겨줌
-        return { totalPrice, bookingFee, ticketCode, eventTitle: event.title, remainingStock };
+        return { 
+            totalPrice, 
+            bookingFee, 
+            ticketCode, 
+            eventTitle: event.title, 
+            remainingStock,
+            
+            // 🌟 [추가] 컨트롤러가 MQ로 전송할 때 사용할 원가와 수수료율
+            ticketPrice: event.price, 
+            salesCommissionRate: salesCommissionRate 
+        };
 
     } catch (err) {
         /**
@@ -98,7 +120,6 @@ exports.validateAndPrepare = async (eventId, count, memberId) => {
  * 목적: Redis 검증이 끝난 데이터를 관계형 DB(PostgreSQL)에 영구 기록함.
  * -------------------------------------------------------------------------
  */
-
 exports.makeReservation = async (resData, memberId) => {
     /**
      * [DB 데이터 정제]
@@ -173,6 +194,12 @@ exports.processRefund = async (ticketCode, memberId) => {
         throw { status: 400, message: "이미 환불되거나 취소된 티켓입니다." };
     }
 
+    // 🌟 [추가] 환불 정산 취소를 위해 원래 공연의 가격(price)과 수수료율 조회
+    const event = await eventRepository.findEventById(reservation.event_id);
+    // 환불할 때도 레포지토리 함수 호출!
+    const feePolicy = await eventRepository.getFeePolicy(reservation.event_id);
+    const salesCommissionRate = feePolicy ? feePolicy.sales_commission_rate : 0;
+
     /**
      * [환불 명세서 반환]
      * 검증이 모두 통과되면 결제 서버로 보낼 메시지 구성에 필요한 최소 정보를 반환함.
@@ -180,6 +207,12 @@ exports.processRefund = async (ticketCode, memberId) => {
     return {
         ticket_code: ticketCode,
         member_id: memberId,
-        cancel_amount: reservation.total_price 
+        cancel_amount: reservation.total_price, 
+        ticket_count: reservation.ticket_count,
+        booking_fee: reservation.booking_fee,
+        
+        // 🌟 [추가] 컨트롤러가 환불 큐를 보낼 때 사용할 원가와 수수료율 데이터
+        ticketPrice: event ? event.price : 0,
+        salesCommissionRate: salesCommissionRate
     };
 };

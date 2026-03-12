@@ -4,3 +4,8 @@ node_modules/
 # [설정 파일] 비밀번호나 DB 주소가 있어서 제외 (보안 필수!)
 .env
 
+# 1. 실제 DB에 변경된 구조를 schema.prisma 파일로 땡겨오기 (DB -> Prisma)
+#npx prisma db pull
+
+# 2. 변경된 스키마를 바탕으로 Prisma Client 생성 (Prisma -> Node.js 코드 적용)
+#npx prisma generate

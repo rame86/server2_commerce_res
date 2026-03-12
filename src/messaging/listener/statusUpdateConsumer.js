@@ -54,7 +54,7 @@ async function startStatusUpdateConsumer() {
                  */
 
                 // Case A: 환불 완료 처리
-                if (normalizedStatus === 'REFUNDED' || type === 'REFUND') {
+                if (normalizedStatus === 'REFUNDED') {
                     if (res.status !== 'REFUNDED') {
                         // DB 트랜잭션: 예약 상태를 환불로 바꾸고 DB 재고를 즉시 복구함
                         await prisma.$transaction(async (tx) => {

@@ -26,6 +26,7 @@ exports.createReservation = async (req, res) => {
          * [비즈니스 로직 1단계: 선검증 및 재고 확보]
          * 서비스 계층을 통해 Redis에서 실시간 재고를 차감하고, 유저의 잔액이 충분한지 등을 종합적으로 검증함.
          * 이 단계가 성공해야만 '티켓 번호'와 '총 결제 금액'이 생성됨.
+         * 🌟 (수정) 추가로 DB에 저장된 순수 티켓 원가(ticketPrice)와 아티스트 판매 수수료율(salesCommissionRate)도 가져옴.
          */
         const bookingDetail = await resService.validateAndPrepare(event_id, count, member_id);
         
@@ -50,10 +51,16 @@ exports.createReservation = async (req, res) => {
         const messagePayload = {
             orderId: bookingDetail.ticketCode, // 추적을 위한 고유 주문 번호
             memberId: Number(member_id),       // 회원 식별자
-            amount: Number(bookingDetail.totalPrice), // 실제 결제 요청 금액
-            type: "PAYMENT",                   // 결제 타입 명시
-            eventTitle: bookingDetail.eventTitle, // 사용자 알림용 공연 제목
-            replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE // 결제 완료 후 결과를 돌려받을 통로 지정
+            amount: Number(bookingDetail.totalPrice), // 실제 결제 요청 금액 (예매수수료 포함 총액)
+            
+            // 🌟 [핵심 변경 사항] 지갑 서버 정산을 위한 순수 원가와 아티스트 수수료율 전송
+            originalAmount: Number(bookingDetail.ticketPrice), // 순수 티켓 1장의 가격 (events 테이블의 price)
+            fee: Number(bookingDetail.salesCommissionRate),    // 아티스트에게 부과할 판매 수수료율 정수값 (예: 5, 8, 12)
+            
+            quantity: count,                             // 티켓 수량
+            type: "PAYMENT",                             // 결제 타입 명시
+            eventTitle: bookingDetail.eventTitle,        // 사용자 알림용 공연 제목
+            replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE  // 결제 완료 후 결과를 돌려받을 통로 지정
         };
         
         // [MQ 발행] 결제 서비스가 구독 중인 큐(pay.request.queue)로 데이터를 쏘아 보냄
@@ -102,6 +109,7 @@ exports.requestRefund = async (req, res) => {
          * [비즈니스 로직 1단계: 환불 자격 검증]
          * 본인의 티켓이 맞는지, 이미 사용된 티켓은 아닌지 등을 DB에서 확인하고 
          * 환불해야 할 금액(cancel_amount) 데이터를 계산해 옴.
+         * 🌟 환불 시 정산을 취소하기 위해 원가와 수수료율 데이터도 함께 가져옴.
          */
         const refundPayload = await resService.processRefund(ticket_code, member_id);
 
@@ -113,7 +121,13 @@ exports.requestRefund = async (req, res) => {
         const messagePayload = {
             orderId: refundPayload.ticket_code,
             memberId: Number(refundPayload.member_id),
-            amount: Number(refundPayload.cancel_amount),
+            amount: Number(refundPayload.cancel_amount),      // 환불 총액 (보통 결제 총액과 같음)
+            
+            // 🌟 [핵심 변경 사항] 환불 시 지갑 서버에서 정산 취소를 위해 사용할 데이터
+            originalAmount: Number(refundPayload.ticketPrice), // 순수 티켓 1장의 가격
+            fee: Number(refundPayload.salesCommissionRate),    // 아티스트 판매 수수료율
+            
+            quantity: Number(refundPayload.ticket_count) || 1, // 0보다는 실제 수량이 안전
             type: "REFUND", // 타입만 REFUND로 바꿔서 결제 서버에 전달
             replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE
         };
