@@ -10,7 +10,7 @@ const { publishToQueue, ROUTING_KEYS } = require('../config/rabbitMQ');
 // [1] 예매 생성 (🚀 예약 도메인의 핵심 로직)
 exports.createReservation = async (req, res) => {
     // [데이터 바인딩] 클라이언트가 보낸 바디값에서 이벤트ID, 티켓 수량, 회원ID를 추출함
-    const { event_id, ticket_count, member_id } = req.body;
+    const { event_id, ticket_count, member_id, selected_seats } = req.body;
     
     // [타입 보정] 문자열로 들어올 수 있는 티켓 수량을 연산을 위해 정수형(Int)으로 변환함
     const count = parseInt(ticket_count, 10);
@@ -40,7 +40,8 @@ exports.createReservation = async (req, res) => {
             ticket_count: count,
             total_price: bookingDetail.totalPrice,
             booking_fee: bookingDetail.bookingFee,
-            ticket_code: bookingDetail.ticketCode
+            ticket_code: bookingDetail.ticketCode,
+            selected_seats // 🌟 2. [데이터 전달 추가] 서비스 계층으로 좌석 배열 데이터 넘겨주기
         }, member_id);
 
         /**
@@ -97,47 +98,76 @@ exports.getReservationStatus = async (req, res) => {
     }
 };
 
-// [3] 환불 요청 접수
+// [3] 환불 요청 접수 (수정: 관리자 승인 절차 추가)
 exports.requestRefund = async (req, res) => {
-    // [요청 데이터 수집] 어떤 티켓을 어떤 유저가 환불하려 하는지 데이터를 받음
-    const { ticket_code, member_id } = req.body; 
+    // [요청 데이터 수집] 티켓 코드와 회원 ID, 그리고 환불 사유(추가)를 받음
+    const { ticket_code, member_id, refund_reason } = req.body; 
 
     try {
-        /**
-         * [비즈니스 로직 1단계: 환불 자격 검증]
-         * 본인의 티켓이 맞는지, 이미 사용된 티켓은 아닌지 등을 DB에서 확인하고 
-         * 환불해야 할 금액(cancel_amount) 데이터를 계산해 옴.
-         * 🌟 환불 시 정산을 취소하기 위해 원가와 수수료율 데이터도 함께 가져옴.
-         */
-        const refundPayload = await resService.processRefund(ticket_code, member_id);
+        const refundRequestData = await resService.prepareRefundAdminRequest(ticket_code, member_id, refund_reason);
 
         /**
-         * [비즈니스 로직 2단계: 결제 취소 요청]
-         * 실제 돈을 환불해 주는 것 역시 비동기로 처리함. 
-         * 결제 서버에 "이 주문번호 환불해 줘"라고 RabbitMQ 메시지를 보냄.
+         * 🌟 Java AdminRefundRequestDTO 규격에 100% 맞춤
          */
-        const messagePayload = {
-            orderId: refundPayload.ticketCode,         // 🌟 서비스 규격 ticketCode
-            memberId: Number(refundPayload.memberId),
-            artistId: refundPayload.artistId ? Number(refundPayload.artistId) : null,
-            amount: Number(refundPayload.totalPrice),
-            originalPrice: Number(refundPayload.ticketPrice), 
-            fee: Number(refundPayload.salesCommissionRate),
-            quantity: Number(refundPayload.quantity),  // 🌟 ticket_count 대신 quantity 사용!
-            type: "REFUND",
-            eventTitle: refundPayload.eventTitle,
-            replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE
+        const adminMessagePayload = {
+            // 1. 공통 필수 정보
+            category: "RES",                            // 예약 서비스 구분값
+            type: "REFUND",                             // 고정값
+            targetId: refundRequestData.ticketCode,     // 티켓 코드 (targetId)
+            title: `[티켓] ${refundRequestData.eventTitle} 환불 요청`, // 화면 노출용 제목
+            memberId: Number(member_id),
+            totalPrice: Number(refundRequestData.totalPrice),
+            status: "PENDING",
+
+            // 2. 상세 데이터 (contentJson에 맵 형태로 담기)
+            contentJson: {
+                refundId: refundRequestData.refund_id,
+                reason: refund_reason || "단순 변심",
+                artistId: refundRequestData.artistId,
+                quantity: refundRequestData.quantity
+            },
+
+            // 3. 부가 정보
+            createdAt: new Date().toISOString()
         };
 
-        // [MQ 발행] 환불 처리 과정 시작
-        await publishToQueue(ROUTING_KEYS.PAY_REQUEST, messagePayload);
-        console.log(`🚀 [MQ 전송] 환불 요청 발송 완료: ${refundPayload.ticket_code}`);
+        // [MQ 발행] 관리자 환불 요청 큐로 전송
+        await publishToQueue(ROUTING_KEYS.REFUND_REQ_ADMIN, adminMessagePayload);
+        
+        console.log(`📩 [Admin MQ] DTO 규격으로 환불 요청 전송: ${adminMessagePayload.targetId}`);
 
-        // [응답] 사용자에게는 요청이 정상 접수되었음을 알림
-        res.status(200).json({ message: "환불 요청이 접수되었습니다." });
+        res.status(202).json({ 
+            message: "환불 요청이 관리자에게 전달되었습니다.",
+            refund_id: refundRequestData.refund_id
+        });
+
     } catch (error) {
-        // [에러 처리] 잘못된 티켓 코드 등 예외 상황에 대해 적절한 에러 코드를 전송함
-        console.error("❌ 환불 처리 오류:", error);
+        console.error("❌ 환불 요청 접수 실패:", error);
         res.status(error.status || 500).json({ message: error.message });
+    }
+};
+
+// [4] 내 예매 내역 조회
+exports.getMyReservations = async (req, res) => {
+    try {
+        // [수정] 인증 미들웨어가 없으므로 URL 파라미터(:memberId)에서 직접 가져옴
+        const { memberId } = req.params; 
+
+
+        // memberId가 아예 안 들어왔을 경우만 체크
+        if (!memberId) {
+            return res.status(400).json({ message: "조회할 회원 ID가 없습니다." });
+        }
+
+        const list = await resService.getMyReservations(memberId);
+
+        res.status(200).json({
+            message: "성공적으로 조회되었습니다.",
+            count: list.length,
+            data: list
+        });
+    } catch (error) {
+        console.error("❌ 내 예매 조회 오류:", error);
+        res.status(500).json({ message: "내역을 불러오는 중 오류가 발생했습니다." });
     }
 };

@@ -46,6 +46,7 @@ exports.getEventDetail = async (req, res) => {
     try {
         // [파라미터 추출] 클라이언트가 요청한 URL 경로에서 :eventId 변수값을 꺼내옴
         const { eventId } = req.params;
+        const parsedEventId = parseInt(eventId, 10);
 
         /**
          * [단일 레코드 조회] 
@@ -53,14 +54,48 @@ exports.getEventDetail = async (req, res) => {
          * Prisma의 findUnique는 PK(Primary Key)를 사용하여 가장 빠른 속도로 하나의 데이터를 조회함.
          */
         const event = await prisma.events.findUnique({
-            where: { event_id: parseInt(eventId, 10) } 
+            where: { event_id: parsedEventId },
+            include: {
+                event_locations: true // 👈 이 부분이 추가되어야 venue를 가져올 수 있어!
+            }
         });
         
         // [예외 처리] 만약 해당 ID로 조회된 공연이 없다면, 리소스가 없음을 알리는 404 상태코드를 반환함
         if (!event) return res.status(404).json({ message: "공연을 찾을 수 없습니다." });
 
+        // 🌟 [추가 로직] 해당 공연의 "취소/환불" 되지 않은 유효한 예약 좌석 싹 긁어오기
+        const reservations = await prisma.reservations.findMany({
+            where: {
+                event_id: parsedEventId,
+                status: {
+                    notIn: ['FAILED', 'REFUNDED'] // 취소되거나 환불된 건 좌석을 다시 풀어줘야 하니까 제외!
+                },
+                selected_seats: {
+                    not: null // 좌석 정보가 NULL이 아닌 것만 가져오기
+                }
+            },
+            select: {
+                selected_seats: true
+            }
+        });
+
+        // 🌟 [배열 합치기] 각각의 예약에서 가져온 좌석 배열을 하나의 1차원 배열로 쫙 펴줌
+        // 예: [ {selected_seats: ["E1", "E2"]}, {selected_seats: ["A1"]} ] 
+        // -> ["E1", "E2", "A1"]
+        let reservedSeatsList = [];
+        reservations.forEach(res => {
+            if (Array.isArray(res.selected_seats)) {
+                reservedSeatsList.push(...res.selected_seats);
+            }
+        });
+        
+        // [BigInt 처리] (필요하다면 getAllEvents처럼 직렬화 로직 추가 가능)
+        const safeEvent = JSON.parse(JSON.stringify(event, (key, value) =>
+            typeof value === 'bigint' ? value.toString() : value
+        ));
+
         // [응답] 조회된 단일 공연 정보를 JSON 형태로 전송함
-        res.json(event);
+        res.json(safeEvent);
     } catch (error) {
         console.error("❌ 상세 조회 오류:", error);
         res.status(500).json({ message: "상세 조회 중 오류 발생" });
@@ -138,53 +173,55 @@ const formatToSpring = (dateInput) => {
            pad(d.getMinutes()) + ':' +
            pad(d.getSeconds());
 };
+
 /**
- * [4] 🌟 공연 등록 신청 (관리자 승인 요청)
+ * [4] 🌟 공연 등록 신청 (이미지 저장 + 신규 필드 반영)
  */
 exports.requestEventApproval = async (req, res) => {
-    // 1. 데이터 추출 (member_id와 requester_id 둘 다 대응하도록 수정)
+    // 1. 데이터 추출 (신규 필드 추가: age_limit, running_time, is_standing, seat_map_config)
     const { 
-        requester_id, member_id, // 👈 포스트맨에서 member_id로 보내도 받을 수 있게 추가
+        requester_id, member_id, 
         title, total_capacity, price, description, venue, address, 
-        event_date, open_time, close_time, images, 
-        artist_id, artist_name, event_type 
-        } = req.body;
+        event_date, open_time, close_time, 
+        images, // 👈 ["url1", "url2"] 형태의 배열
+        artist_id, artist_name, event_type,
+        age_limit, running_time, is_standing, seat_map_config 
+    } = req.body;
 
     try {
-        // [방어 코드] BigInt로 변환할 핵심 ID들이 있는지 먼저 확인
-        // 만약 포스트맨에서 'member_id'로 보냈다면 그걸 'requester_id'로 써야 함
         const finalRequesterId = requester_id || member_id;
-        // artist_id가 없으면 일단 requester_id와 동일하게 처리하거나 에러 방지
         const finalArtistId = artist_id || finalRequesterId;
 
         if (!finalRequesterId) throw new Error("requester_id(또는 member_id)가 누락되었습니다.");
 
-        // 주소를 좌표로 변환함 (지도 표시용)
+        // 주소를 좌표로 변환
         const coords = await eventService.getCoordinates(address);
         const lat = coords ? coords.lat : null;
         const lng = coords ? coords.lng : null;
 
-        // 나중에 관리자가 볼 수 있게 당시 신청 정보를 스냅샷으로 저장함
+        // 관리자 확인용 스냅샷 (신규 필드 포함)
         const eventSnapshot = {
             title, artist_id, artist_name, event_type, description,
             price: parseInt(price, 10),
             total_capacity: parseInt(total_capacity, 10),
             venue, address, event_date, open_time, close_time,
+            age_limit: parseInt(age_limit, 10) || 0,
+            running_time: parseInt(running_time, 10) || 0,
+            is_standing: is_standing === true || is_standing === 'true',
+            seat_map_config: seat_map_config || null,
             images: images || []
         };
 
         /**
          * 2. [핵심 로직] 트랜잭션 처리
-         * // [중요] 세 가지 DB 작업을 하나로 묶음 (하나라도 틀리면 전체 취소)
-         * 공연 생성, 위치 저장, 승인 요청서 작성이 모두 하나라도 실패하면 원복됨.
-         * 데이터 무결성을 보장하는 가장 중요한 구간.
+         * 이벤트 -> 위치 -> 이미지 -> 승인요청 순서로 저장 (원자성 보장)
          */
-       const { newEvent, approvalReq } = await prisma.$transaction(async (tx) => {
-            // (1) 공연 기본 정보 생성
+        const { newEvent, approvalReq } = await prisma.$transaction(async (tx) => {
+            // (1) 공연 기본 정보 생성 (신규 필드 포함)
             const createdEvent = await tx.events.create({
                 data: {
                     title, 
-                    artist_id: BigInt(finalArtistId), // 🚩 안전하게 확보된 ID 사용
+                    artist_id: BigInt(finalArtistId),
                     artist_name, 
                     event_type, 
                     description,
@@ -194,6 +231,10 @@ exports.requestEventApproval = async (req, res) => {
                     event_date: new Date(event_date),
                     open_time: new Date(open_time),
                     close_time: new Date(close_time),
+                    age_limit: parseInt(age_limit, 10) || 0,
+                    running_time: parseInt(running_time, 10) || 0,
+                    is_standing: is_standing === true || is_standing === 'true',
+                    seat_map_config: seat_map_config || null,
                     approval_status: 'PENDING'
                 }
             });
@@ -206,11 +247,23 @@ exports.requestEventApproval = async (req, res) => {
                 }
             });
 
-            // (3) 승인 요청 데이터 생성
+            // (3) 🌟 [신규] 사진 정보 생성 (Bulk Insert)
+            if (images && Array.isArray(images) && images.length > 0) {
+                await tx.event_images.createMany({
+                    data: images.map((url, index) => ({
+                        event_id: createdEvent.event_id,
+                        image_url: url,
+                        image_role: index === 0 ? 'POSTER' : 'DETAIL', // 첫 번째는 포스터, 나머지는 상세
+                        sort_order: index
+                    }))
+                });
+            }
+
+            // (4) 승인 요청 데이터 생성
             const createdApproval = await tx.event_approvals.create({
                 data: {
                     event_id: createdEvent.event_id,
-                    requester_id: BigInt(finalRequesterId), // 🚩 안전하게 확보된 ID 사용
+                    requester_id: BigInt(finalRequesterId),
                     status: 'PENDING',
                     event_snapshot: eventSnapshot
                 }
@@ -225,7 +278,7 @@ exports.requestEventApproval = async (req, res) => {
             return { newEvent: createdEvent, approvalReq: createdApproval };
         });
 
-        // 3. [MSA] Java DTO 조립
+        // 3. [MSA] Java DTO 조립 (신규 필드 포함하여 관리자에게 발송)
         const eventResultDTO = {
             approvalId: Number(newEvent.event_id), 
             requesterId: Number(finalRequesterId), 
@@ -235,21 +288,24 @@ exports.requestEventApproval = async (req, res) => {
             createdAt: formatToSpring(approvalReq.created_at),
             eventStartDate: formatToSpring(event_date),
             location: venue,
-            price: Number(price)
+            price: Number(price),
+            // 추가된 디테일 정보
+            ageLimit: parseInt(age_limit, 10) || 0,
+            runningTime: parseInt(running_time, 10) || 0,
+            isStanding: is_standing === true || is_standing === 'true'
         };
 
-        // RabbitMQ 전송
+        // RabbitMQ 전송 (라우팅 키: admin.event.request)
         await mq.publishToQueue(mq.ROUTING_KEYS.EVENT_REQ_ADMIN, eventResultDTO);
 
-        console.log(`📤 [관리자 전송 성공] ID: ${eventResultDTO.approvalId}, 제목: ${eventResultDTO.eventTitle}`);
+        console.log(`📤 [관리자 전송] ID: ${eventResultDTO.approvalId}, 제목: ${eventResultDTO.eventTitle}`);
         
         res.status(202).json({ 
-            message: "신청 완료", 
+            message: "신청 완료 및 이미지 등록 성공", 
             approvalId: eventResultDTO.approvalId 
         });
 
     } catch (error) {
-        // 여기서 "Cannot convert undefined to a BigInt" 에러가 잡힘
         console.error("❌ 승인 요청 실패:", error.message);
         res.status(500).json({ message: `신청 실패: ${error.message}` });
     }
