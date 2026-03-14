@@ -70,6 +70,7 @@ const startConsumer = require('./messaging/listener/consumer');
 const startCancelConsumer = require('./messaging/listener/cancelConsumer');
 const startStatusUpdateConsumer = require('./messaging/listener/statusUpdateConsumer');
 const startEventResponseConsumer = require('./messaging/listener/eventResponseConsumer');
+const startRefundResponseConsumer = require('./messaging/listener/refundResponseConsumer'); // 🌟 [추가] 환불 승인 리스너
 
 /**
  * [서버 리스닝 및 초기화 프로세스]
@@ -93,6 +94,8 @@ app.listen(PORT, async () => {
         await startStatusUpdateConsumer();
         // 🌟 공연 승인 결과 처리 컨슈머 실행
         await startEventResponseConsumer();
+        // 🌟 [추가] 환불 승인 결과 처리 컨슈머 실행
+        await startRefundResponseConsumer();
 
         console.log("✅ [Messaging] 모든 RabbitMQ 컨슈머 연결 성공");
 

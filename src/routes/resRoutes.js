@@ -1,4 +1,4 @@
-//resRoutes.js
+// src/routes/resRoutes.js
 
 const express = require('express');
 const router = express.Router();
@@ -31,6 +31,11 @@ router.post('/refund', resController.requestRefund);
 
 // [GET]📍 공연 정보/지도 관련
 router.get('/events/:eventId/location', eventController.getEventLocation);
+
+// [GET] 특정 유저의 전체 예약 내역 조회 
+// 경로: /msa/res/member/:memberId
+
+router.get('/member/:memberId', resController.getMyReservations);
 
 /**
  * [POST] 모든 이벤트 재고 Redis 동기화 (관리자용 Warm-up)

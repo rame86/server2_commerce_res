@@ -69,6 +69,7 @@ exports.findApprovalById = async (eventId) => {
 
 /**
  * [공연 등록 신청 - Repository] 
+ * 수정 사항: 이미지(event_images) 저장 로직 추가
  */
 exports.createEventRequest = async (data) => {
     return await prisma.$transaction(async (tx) => {
@@ -83,10 +84,9 @@ exports.createEventRequest = async (data) => {
                 category: data.category,
                 event_date: new Date(data.event_date),
                 approval_status: 'PENDING',
-                // 💡 [방어 코드] member_id가 undefined/null인 경우 BigInt 에러 방지
                 member_id: (data.member_id !== undefined && data.member_id !== null) 
-                           ? BigInt(data.member_id) 
-                           : null
+                            ? BigInt(data.member_id) 
+                            : null
             }
         });
 
@@ -96,12 +96,24 @@ exports.createEventRequest = async (data) => {
                 event_id: newEvent.event_id,
                 venue_name: data.venue,
                 address: data.address,
-                lat: data.lat,
-                lng: data.lng
+                latitude: data.lat,         // 🌟 lat -> latitude
+                longitude: data.lng
             }
         });
 
-        // 3. 관리자 승인 대기열(event_approvals)에 등록
+        // 🌟 3. [추가] 공연 이미지 정보 저장
+        // data.images가 배열로 들어온다고 가정 (예: [{url: '...', type: 'POSTER'}, ...])
+        if (data.images && Array.isArray(data.images) && data.images.length > 0) {
+            await tx.event_images.createMany({
+                data: data.images.map(img => ({
+                    event_id: newEvent.event_id,
+                    image_url: img.url,
+                    image_type: img.type || 'SUB' // 메인 포스터 여부 등을 구분
+                }))
+            });
+        }
+
+        // 4. 관리자 승인 대기열(event_approvals)에 등록
         await tx.event_approvals.create({
             data: {
                 event_id: newEvent.event_id,

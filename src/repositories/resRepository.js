@@ -66,7 +66,8 @@ exports.createReservationWithTransaction = async (data) => {
                 booking_fee: data.booking_fee,
                 total_price: data.total_price,
                 ticket_code: data.ticket_code,
-                status: 'PENDING' 
+                status: 'PENDING',
+                selected_seats: data.selected_seats
             }
         });
 
@@ -158,5 +159,29 @@ exports.completeRefund = async (ticket_code, event_id, ticket_count) => {
         });
 
         return updatedRes;
+    });
+};
+
+/**
+ * [내 예매 내역 조회 - Repository]
+ * 스키마 반영: image_role('POSTER'), venue 필드 대응
+ */
+exports.findReservationsByMemberId = async (memberId) => {
+    return await prisma.reservations.findMany({
+        where: { 
+            member_id: BigInt(memberId) 
+        },
+        include: {
+            events: {
+                include: {
+                    event_locations: true, // venue, address 포함
+                    event_images: {
+                        where: { image_role: 'POSTER' }, // 🌟 스키마에 정의된 'POSTER' 역할만!
+                        take: 1
+                    }
+                }
+            }
+        },
+        orderBy: { booked_at: 'desc' } // 🌟 스키마의 booked_at 기준 정렬
     });
 };

@@ -131,7 +131,8 @@ exports.makeReservation = async (resData, memberId) => {
         member_id: memberId,
         total_price: resData.totalPrice || resData.total_price,
         booking_fee: resData.bookingFee || resData.booking_fee,
-        ticket_code: resData.ticketCode || resData.ticket_code
+        ticket_code: resData.ticketCode || resData.ticket_code,
+        selected_seats: resData.selected_seats || null
     };
 
     /**
@@ -216,3 +217,89 @@ exports.processRefund = async (ticketCode, memberId) => {
         // 💡 bookingFee는 자바에서 안 받으므로 리턴에서 제외하거나 무시
     };
 };
+
+/**
+ * [관리자 환불 승인 요청 준비] - 2번 과제 추가 로직
+ * -------------------------------------------------------------------------
+ * 목적: 사용자가 환불 요청 시 즉시 취소하지 않고, 관리자 승인 대기 상태(PENDING)로
+ * reservation_refunds 테이블에 기록을 남긴 뒤, 큐 전송용 데이터를 반환함.
+ * -------------------------------------------------------------------------
+ */
+exports.prepareRefundAdminRequest = async (ticketCode, memberId, refundReason) => {
+    const { PrismaClient } = require('@prisma/client');
+    const prisma = new PrismaClient();
+
+    // 1. 기존 processRefund 로직을 재활용하여 자격 검증 및 기본 데이터(금액, 아티스트 정보 등)를 가져옴
+    const refundPayload = await this.processRefund(ticketCode, memberId);
+
+    // 2. 예약 데이터 조회 (processRefund에서 이미 검증했지만, reservation_id가 필요하므로 다시 가져옴)
+    const reservation = await resRepository.findReservationByCode(ticketCode);
+    if (!reservation) throw { status: 404, message: "예매 내역을 찾을 수 없습니다." };
+
+    try {
+        // 3. 트랜잭션: 환불 테이블에 기록 & 기존 예약 상태를 'REFUND_PENDING'으로 변경
+        const refundRecord = await prisma.$transaction(async (tx) => {
+            
+            // a. reservation_refunds 테이블에 PENDING 상태로 데이터 삽입
+            const newRefund = await tx.reservation_refunds.create({
+                data: {
+                    reservation_id: reservation.reservation_id,
+                    member_id: BigInt(memberId),
+                    refund_amount: refundPayload.totalPrice,
+                    refund_reason: refundReason || "단순 변심",
+                    status: 'PENDING'
+                }
+            });
+
+            // b. reservations 테이블의 상태를 변경하여 중복 환불 요청이나 사용을 막음
+            // (참고: 기존 스키마에 REFUND_PENDING 상태가 정의되어 있다고 가정)
+            await tx.reservations.update({
+                where: { reservation_id: reservation.reservation_id },
+                data: { status: 'REFUND_PENDING', updated_at: new Date() }
+            });
+
+            return newRefund;
+        });
+
+        console.log(`✅ [환불 요청 DB 저장] RefundID: ${refundRecord.refund_id}, 상태: PENDING`);
+
+        // 4. 컨트롤러가 관리자 큐(RabbitMQ)로 전송하기 좋게 기존 payload에 생성된 환불 ID를 합쳐서 반환
+        return {
+            ...refundPayload, // ticketCode, totalPrice, artistId 등 모두 포함
+            refund_id: refundRecord.refund_id
+        };
+
+    } catch (error) {
+        console.error("❌ 환불 DB 저장 중 오류 발생:", error);
+        throw { status: 500, message: "환불 요청을 처리하는 중 서버 오류가 발생했습니다." };
+    }
+};
+
+/**
+ * [내 예매 내역 서비스]
+ */
+exports.getMyReservations = async (memberId) => {
+    const reservations = await resRepository.findReservationsByMemberId(memberId);
+
+    return reservations.map(res => ({
+        reservation_id: res.reservation_id, // UUID는 그대로 문자열 처리됨
+        ticket_code: res.ticket_code,
+        status: res.status,
+        ticket_count: res.ticket_count,
+        pure_price: res.total_price - res.booking_fee,
+        // 🌟 스냅샷에 있던 좌석 정보도 필요하면 포함
+        selected_seats: res.selected_seats, 
+        events: {
+            title: res.events.title,
+            artist_name: res.events.artist_name, // 아티스트명 추가
+            event_date: res.events.event_date,
+            // 🌟 b.events.event_locations.venue 경로 대응
+            event_locations: {
+                venue: res.events.event_locations?.venue || "장소 정보 없음"
+            },
+            poster: res.events.event_images[0]?.image_url || null
+        },
+        booked_at: res.booked_at
+    }));
+};
+
