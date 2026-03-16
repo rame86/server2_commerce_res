@@ -30,9 +30,26 @@ const SCALE_POLICIES = [
 ];
 
 /**
+ * 🌟 [자체 공연장 전용 특별 정책]
+ * -------------------------------------------------------------------------
+ * 목적: 대관료 대신 티켓 판매당 20% 수수료를 고정으로 부과
+ * -------------------------------------------------------------------------
+ */
+const INTERNAL_VENUE_POLICY = {
+    rate: 20,         // 고정 수수료 20%
+    type: 'NOW',      // 정산 방식 (일단 '즉시 정산'으로 둠. 필요시 'END'나 'DAY'로 변경해)
+    group: 'LUMINA'   // 자체 공연장 식별용 그룹 (DB 저장 시 구분하기 편함)
+};
+
+// 자체 공연장 이름 목록 (이 배열에 포함되면 무조건 위 20% 정책 적용)
+const INTERNAL_VENUES = ['루미나50', '루미나100', '루미나200'];
+
+/**
  * [모듈 내보내기]
  * Node.js 환경의 CommonJS 방식(require)과 호환되도록 module.exports 사용
  */
 module.exports = {
-    SCALE_POLICIES
+    SCALE_POLICIES,
+    INTERNAL_VENUE_POLICY,
+    INTERNAL_VENUES
 };

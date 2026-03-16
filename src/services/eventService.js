@@ -3,7 +3,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const redis = require('../config/redisClient');
 const eventRepository = require('../repositories/eventRepository');
-const { SCALE_POLICIES } = require('../constants/policy'); // 규모별 정책 상수 (S, M, L)
+const { SCALE_POLICIES, INTERNAL_VENUE_POLICY, INTERNAL_VENUES } = require('../constants/policy');
 
 /**
  * [공연 신청 및 승인 요청] - POST /events 대응
@@ -193,18 +193,31 @@ exports.processAdminResponse = async (response) => {
                 }
             });
 
-            // [자동화] 정책 수립
-            const policy = SCALE_POLICIES.find(p => updatedEvent.total_capacity >= p.min);
+            // 🌟 [자동화 로직 수정] 자체 공연장(루미나 시리즈) 특별 수수료율 분기 처리
+            const venueName = snapshot.venue || updatedEvent.venue; // 스냅샷이나 이벤트 정보에서 공연장 이름 가져옴
+            let appliedPolicy;
+
+            // 1. 만약 공연장 이름이 루미나50, 루미나100, 루미나200 중 하나라면?
+            if (venueName && INTERNAL_VENUES.includes(venueName)) {
+                appliedPolicy = INTERNAL_VENUE_POLICY; 
+            } 
+            // 2. 외부 공연장이라면 기존처럼 좌석 수에 따라 정책 매칭
+            else {
+                appliedPolicy = SCALE_POLICIES.find(p => updatedEvent.total_capacity >= p.min) || SCALE_POLICIES[2]; // 못 찾으면 S그룹
+            }
+
+            // DB에 수수료 정책 데이터 넣기
+            // eventService.js
             await tx.event_fee_policies.create({
                 data: {
                     event_id: actualEventId,
-                    scale_group: policy.group,
-                    settlement_type: policy.type,
-                    sales_commission_rate: policy.rate
+                    // group이 'LUMINA'면 'LUMINA'를, 아니면 원래 정책 그룹(S, M, L)을 그대로 입력
+                    scale_group: appliedPolicy.group === 'LUMINA' ? 'LUMINA' : appliedPolicy.group, 
+                    settlement_type: appliedPolicy.type,
+                    sales_commission_rate: appliedPolicy.rate
                 }
             });
-
-            console.log(`✨ [자동화 완료] 공연 ${actualEventId}: 상세 데이터 확정 및 ${policy.group}그룹 정책 수립`);
+            console.log(`✨ [자동화 완료] 공연 ${actualEventId}: 상세 데이터 확정 및 ${appliedPolicy.group}그룹(${appliedPolicy.rate}%) 정책 수립`);
             return updatedEvent;
 
         } else if (status === 'FAILED') {
