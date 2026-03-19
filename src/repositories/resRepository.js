@@ -1,20 +1,11 @@
+// src/repositories/resRepository.js
+
 /**
  * FanVerse - Reservation Repository Layer
- * 담당: PostgreSQL(Server 1) 직접 접근 및 트랜잭션 제어
+ * 담당: Prisma를 이용한 예약 관련 PostgreSQL(Server 1) 데이터 제어
  */
-
-const { pool } = require('../../app'); // app.js에서 설정한 공용 DB Connection Pool 로드
-
-/**
- * [공연 목록 조회]
- * 일반적인 단순 조회는 Pool에서 비어있는 클라이언트를 자동으로 하나 써서 결과를 가져옴
- */
-exports.findAllEvents = async () => {
-    // res 스키마의 events 테이블에서 날짜 오름차순으로 전체 데이터 조회
-    const query = 'SELECT * FROM res.events ORDER BY event_date ASC';
-    const { rows } = await pool.query(query);
-    return rows;
-};
+// ✅ 공용 설정을 불러오기만 하면 끝!
+const prisma = require('../config/prisma');
 
 /**
  * [예약 생성 트랜잭션]
@@ -22,77 +13,198 @@ exports.findAllEvents = async () => {
  */
 exports.createReservationWithTransaction = async (data) => {
     /**
-     * [💡 핵심: 클라이언트 대여]
-     * pool.query()를 쓰면 쿼리마다 클라이언트를 빌리고 반납하는 과정이 자동으로 일어나서
-     * BEGIN - COMMIT 사이의 연속된 상태를 유지할 수 없음.
-     * 따라서 pool.connect()로 명시적으로 '전용 클라이언트'를 하나 빌려와야 트랜잭션 유지가 가능함.
+     * [트랜잭션 격리]
+     * $transaction을 사용하여 내부 로직 중 하나라도 실패하면 전체 과정을 롤백함
      */
-    const client = await pool.connect(); 
+    return await prisma.$transaction(async (tx) => {
+        
+        // 1. [재고 확인 및 행 잠금] 
+        // findUnique를 통해 공연 데이터를 조회함. 트랜잭션 내에서 조회하므로 데이터 정합성을 확보함.
+        const event = await tx.events.findUnique({
+            where: { event_id: data.event_id }
+        });
 
-    try {
-        // 1. 트랜잭션 시작 (이 클라이언트는 이제 이 작업이 끝날 때까지 독점됨)
-        await client.query('BEGIN'); 
-
-        /**
-         * 2. 좌석 확인 및 행 잠금 (Row-level Lock)
-         * 'FOR UPDATE'를 붙여서 다른 트랜잭션이 이 행을 수정하거나 읽지 못하게 막음 (선착순 중복 방지)
-         * 
-         */
-        const checkQuery = `
-            SELECT available_seats, price FROM res.events 
-            WHERE event_id = $1 FOR UPDATE
-        `;
-        const eventRes = await client.query(checkQuery, [data.event_id]);
-
-        if (eventRes.rows.length === 0) throw new Error("존재하지 않는 공연입니다.");
-        const event = eventRes.rows[0];
-
-        // 비즈니스 로직 검증: 잔여석 체크
+        // [방어 로직] 존재하지 않는 공연이거나, 실시간 잔여석이 구매 수량보다 적으면 즉시 에러를 던져 중단함
+        if (!event) throw new Error("존재하지 않는 공연입니다.");
         if (event.available_seats < data.ticket_count) {
             throw new Error("잔여석이 부족하여 예매할 수 없습니다.");
         }
 
-        // 3. 재고 차감 (Update)
-        const updateQuery = `
-            UPDATE res.events 
-            SET available_seats = available_seats - $1 
-            WHERE event_id = $2
-        `;
-        await client.query(updateQuery, [data.ticket_count, data.event_id]);
+        // 2. [재고 차감 (Update)]
+        // DB의 원자적 연산(decrement)을 사용하여 available_seats 수치를 구매 수량만큼 줄임
+        await tx.events.update({
+            where: { event_id: data.event_id },
+            data: {
+                available_seats: {
+                    decrement: data.ticket_count 
+                }
+            }
+        });
 
-        // 4. 예약 데이터 삽입 (Insert)
-        const insertQuery = `
-            INSERT INTO res.reservations 
-            (event_id, member_id, ticket_count, total_price, ticket_code, status)
-            VALUES ($1, $2, $3, $4, $5, 'CONFIRMED')
-            RETURNING *
-        `;
-        // 화면에 보여줄 고유 티켓 코드 생성 (난수 기반)
-        const ticketCode = `TKT-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+        // 3. [예약 데이터 삽입 (Insert)]
+        // 최종적으로 reservations 테이블에 예약 내역을 생성함. 초기 상태는 'PENDING'으로 설정함.
+        const reservation = await tx.reservations.create({
+            data: {
+                event_id: data.event_id,
+                member_id: data.member_id,
+                ticket_count: data.ticket_count,
+                booking_fee: data.booking_fee,
+                total_price: data.total_price,
+                ticket_code: data.ticket_code,
+                status: 'PENDING',
+                selected_seats: data.selected_seats
+            }
+        });
+
+        // 핵심 주석: Prisma 트랜잭션 성공 시 자동 COMMIT, 에러 시 자동 ROLLBACK
+        return reservation;
+    });
+};
+
+/**
+ * [보상 트랜잭션] 결제 실패 시 예약 취소 및 DB 재고 원복
+ */
+exports.cancelReservationAndRestoreStock = async (ticket_code, event_id, ticket_count) => {
+    /**
+     * [복구 트랜잭션] 
+     * 데이터 일관성을 위해 상태 변경과 재고 복구를 하나의 단위로 실행함
+     */
+    return await prisma.$transaction(async (tx) => {
         
-        const insertRes = await client.query(insertQuery, [
-            data.event_id,
-            data.member_id,
-            data.ticket_count,
-            event.price * data.ticket_count, // 서버 측 계산으로 금액 위변조 방지
-            ticketCode
-        ]);
+        // 1. [현재 예약 상태 확인]
+        // findFirst를 통해 취소하려는 티켓의 존재 여부를 먼저 파악함
+        const reservation = await tx.reservations.findFirst({
+            where: { ticket_code: ticket_code }
+        });
 
-        // 5. 모든 작업 성공 시 실제 DB에 반영
-        await client.query('COMMIT'); 
-        return insertRes.rows[0];
+        // [중복 취소 방지] 이미 취소되었거나 데이터가 없다면 무의미한 업데이트를 하지 않고 스킵함
+        if (!reservation) {
+            console.log(`⚠️ [Skip] 이미 취소되었거나 없는 예약입니다: ${ticket_code}`);
+            return null; 
+        }
 
-    } catch (err) {
-        // 과정 중 하나라도 에러 발생 시(예: 잔여석 부족 등) 이전 상태로 모두 되돌림
-        await client.query('ROLLBACK'); 
-        console.error("[Transaction Error] 예매 롤백 실행:", err.message);
-        throw err;
-    } finally {
-        /**
-         * [💡 중요: 클라이언트 반납]
-         * 빌려온 클라이언트를 반드시 Pool에 돌려줘야 함. 
-         * 반납 안 하면 커넥션 풀이 말라서 서버가 멈춤 (Connection Leak 방지)
-         */
-        client.release(); 
+        // 2. [예약 상태 변경]
+        // 예약 내역의 PK(ID)를 기준으로 상태를 'FAILED'로 업데이트함
+        const updatedRes = await tx.reservations.update({
+            where: { reservation_id: reservation.reservation_id },
+            data: { status: 'FAILED' }
+        });
+
+        // 3. [DB 재고 원복]
+        // 취소된 티켓 수량만큼 events 테이블의 available_seats를 다시 증가(increment)시킴
+        await tx.events.update({
+            where: { event_id: event_id },
+            data: { available_seats: { increment: ticket_count } }
+        });
+
+        // 핵심 주석: 상태 체크 후 취소 처리함으로써 재고 중복 복구 방지
+        return updatedRes;
+    });
+};
+
+/**
+ * 1. [조회] 티켓 존재 여부 및 정보 확인
+ */
+exports.findReservationByCode = async (ticket_code) => {
+    /**
+     * [단일 건 조회]
+     * 고유 키인 ticket_code를 사용하여 특정 예약 건의 모든 정보를 불러옴
+     */
+    return await prisma.reservations.findUnique({
+        where: { ticket_code: ticket_code }
+    });
+};
+
+/**
+ * 2. [수정] 환불 확정 및 좌석 복구 (트랜잭션)
+ */
+exports.completeRefund = async (ticket_code, event_id, ticket_count) => {
+    /**
+     * [환불 트랜잭션]
+     * 결제 취소가 완료된 후 DB 상태를 'REFUNDED'로 바꾸고 좌석을 다시 시장에 내놓는 과정임
+     */
+    return await prisma.$transaction(async (tx) => {
+        
+        // [Step 1] 예약 상태 변경 
+        // 특정 티켓의 상태를 환불 완료(REFUNDED)로 변경함
+        const updatedRes = await tx.reservations.update({
+            where: { ticket_code: ticket_code },
+            data: { status: 'REFUNDED' } 
+        });
+
+        // [Step 2] DB 좌석 수 복구 
+        // 해당 공연의 재고 수량을 환불된 수량만큼 다시 늘려줌
+        await tx.events.update({
+            where: { event_id: event_id },
+            data: { 
+                available_seats: { 
+                    increment: ticket_count 
+                } 
+            }
+        });
+
+        return updatedRes;
+    });
+};
+
+/**
+ * [내 예매 내역 조회 - Repository]
+ * 스키마 반영: image_role('POSTER'), venue 필드 대응
+ */
+exports.findReservationsByMemberId = async (memberId) => {
+    return await prisma.reservations.findMany({
+        where: { 
+            member_id: BigInt(memberId) 
+        },
+        include: {
+            events: {
+                include: {
+                    event_locations: true, // venue, address 포함
+                    event_images: {
+                        where: { image_role: 'POSTER' }, // 🌟 스키마에 정의된 'POSTER' 역할만!
+                        take: 1
+                    }
+                }
+            }
+        },
+        orderBy: { booked_at: 'desc' } // 🌟 스키마의 booked_at 기준 정렬
+    });
+};
+
+// 🌟 핵심: 특정 이벤트의 예매자 데이터만 DB에서 순수하게 조회
+exports.findReservationsByEventId = async (eventId) => {
+    return await prisma.reservations.findMany({
+        where:{
+            event_id: parseInt(eventId),
+            status: 'CONFIRMED'
+        },
+        select: {
+            reservation_id: true,
+            member_id: true,
+            status: true,
+            booked_at: true,
+            ticket_count: true
+        }
+    });
+}
+
+// [DB 조회] 특정 아티스트의 최근 5일 예매 내역 조회
+exports.getRecentReservationsByArtist = async (artistId, startDate) => {
+  return await prisma.reservations.findMany({
+    where: {
+      event: {
+        artist_id: BigInt(artistId) // 스키마에 BIGINT로 되어 있으니 변환
+      },
+      booked_at: {
+        gte: startDate
+      },
+      status: {
+        in: ['CONFIRMED', 'PENDING']
+      }
+    },
+    select: {
+      booked_at: true,
+      ticket_count: true
     }
+  });
 };

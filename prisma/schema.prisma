@@ -10,40 +10,137 @@ datasource db {
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-model events {
-  event_id        Int            @id @default(autoincrement())
-  title           String         @db.VarChar(255)
-  artist_name     String?        @db.VarChar(100)
-  event_type      String?        @db.VarChar(50)
-  price           Int
-  total_capacity  Int
-  available_seats Int
-  venue           String         @db.VarChar(255)
-  address         String         @db.VarChar(500)
-  event_date      DateTime       @db.Timestamptz(6)
-  open_time       DateTime       @db.Timestamptz(6)
-  close_time      DateTime       @db.Timestamptz(6)
-  version         Int            @default(0)
-  created_at      DateTime?      @default(now()) @db.Timestamptz(6)
-  reservations    reservations[]
+model event_approvals {
+  approval_id                                Int       @id @default(autoincrement())
+  event_id                                   Int?
+  requester_id                               BigInt
+  status                                     String?   @default("PENDING") @db.VarChar(20)
+  rejection_reason                           String?
+  event_snapshot                             Json
+  admin_id                                   BigInt?
+  created_at                                 DateTime? @default(now()) @db.Timestamptz(6)
+  processed_at                               DateTime? @db.Timestamptz(6)
+  events_event_approvals_event_idToevents    events?   @relation("event_approvals_event_idToevents", fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+  events_events_approval_idToevent_approvals events[]  @relation("events_approval_idToevent_approvals")
 
+  @@index([status], map: "idx_approvals_status")
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model event_fee_policies {
+  event_id              Int       @id
+  scale_group           String    @db.VarChar(20)
+  settlement_type       String    @db.VarChar(20)
+  sales_commission_rate Int
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+  events                events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model event_images {
+  image_id   Int       @id @default(autoincrement())
+  event_id   Int
+  image_url  String    @db.VarChar(500)
+  image_role String?   @default("DETAIL") @db.VarChar(20)
+  sort_order Int?      @default(0)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  events     events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([event_id], map: "idx_event_images_event_id")
+  @@schema("res")
+}
+
+model event_locations {
+  event_id   Int       @id
+  venue      String    @db.VarChar(255)
+  address    String    @db.VarChar(500)
+  latitude   Decimal?  @db.Decimal(10, 8)
+  longitude  Decimal?  @db.Decimal(11, 8)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  events     events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model events {
+  event_id                                            Int                 @id @default(autoincrement())
+  title                                               String              @db.VarChar(255)
+  artist_id                                           BigInt
+  artist_name                                         String?             @db.VarChar(100)
+  event_type                                          String?             @db.VarChar(50)
+  description                                         String?
+  price                                               Int
+  total_capacity                                      Int
+  available_seats                                     Int
+  event_date                                          DateTime            @db.Timestamptz(6)
+  open_time                                           DateTime            @db.Timestamptz(6)
+  close_time                                          DateTime            @db.Timestamptz(6)
+  age_limit                                           Int?                @default(0)
+  running_time                                        Int?
+  is_standing                                         Boolean?            @default(false)
+  seat_map_config                                     Json?
+  approval_status                                     String?             @default("PENDING") @db.VarChar(20)
+  approval_id                                         Int?
+  version                                             Int                 @default(0)
+  created_at                                          DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at                                          DateTime?           @default(now()) @db.Timestamptz(6)
+  deleted_at                                          DateTime?           @db.Timestamptz(6)
+  event_approvals_event_approvals_event_idToevents    event_approvals[]   @relation("event_approvals_event_idToevents")
+  event_fee_policies                                  event_fee_policies?
+  event_images                                        event_images[]
+  event_locations                                     event_locations?
+  event_approvals_events_approval_idToevent_approvals event_approvals?    @relation("events_approval_idToevent_approvals", fields: [approval_id], references: [approval_id], onUpdate: NoAction, map: "fk_events_approval_id")
+  reservations                                        reservations[]
+
+  @@index([approval_id], map: "idx_events_approval_id")
+  @@index([approval_status], map: "idx_events_approval_status")
   @@index([open_time, close_time], map: "idx_events_open_close")
   @@schema("res")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model reservation_refunds {
+  refund_id        Int          @id @default(autoincrement())
+  reservation_id   String       @db.Uuid
+  member_id        BigInt
+  refund_amount    Int
+  refund_reason    String?
+  status           String?      @default("PENDING") @db.VarChar(20)
+  admin_id         BigInt?
+  rejection_reason String?
+  created_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  processed_at     DateTime?    @db.Timestamptz(6)
+  updated_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  reservations     reservations @relation(fields: [reservation_id], references: [reservation_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([reservation_id], map: "idx_refunds_reservation")
+  @@index([status], map: "idx_refunds_status")
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model reservations {
-  reservation_id String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  event_id       Int
-  member_id      BigInt
-  ticket_count   Int
-  total_price    Int
-  ticket_code    String    @unique @db.VarChar(50)
-  status         String?   @default("CONFIRMED") @db.VarChar(20)
-  booked_at      DateTime? @default(now()) @db.Timestamptz(6)
-  events         events    @relation(fields: [event_id], references: [event_id], onDelete: NoAction, onUpdate: NoAction)
+  reservation_id      String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_id            Int
+  member_id           BigInt
+  ticket_count        Int
+  selected_seats      Json?
+  booking_fee         Int                   @default(0)
+  total_price         Int
+  ticket_code         String                @unique @db.VarChar(50)
+  status              String?               @default("PENDING") @db.VarChar(20)
+  booked_at           DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  reservation_refunds reservation_refunds[]
+  events              events                @relation(fields: [event_id], references: [event_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([event_id], map: "idx_reservations_event")
-  @@index([member_id], map: "idx_reservations_user")
+  @@index([member_id], map: "idx_reservations_member")
+  @@index([status], map: "idx_reservations_status")
   @@schema("res")
 }

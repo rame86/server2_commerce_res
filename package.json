@@ -5,11 +5,16 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "nodemon src/app.js"
+    "dev": "nodemon src/app.js",
+    "/* 배포 및 자동화를 위한 스크립트 추가 */": "------------------",
+    "postinstall": "prisma generate",
+    "db:pull": "npx prisma db pull",
+    "db:gen": "npx prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
     "amqplib": "^0.10.9",
+    "axios": "^1.13.6",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
@@ -19,5 +24,8 @@
     "pg": "^8.18.0",
     "prisma": "^6.19.2",
     "redis": "^5.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
