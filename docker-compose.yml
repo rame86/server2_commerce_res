@@ -7,9 +7,9 @@ services:
       - "8082:8082"
     environment:
       - PORT=8082
-      # Server 1 IP(34.158.208.117) 사용
-      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@34.158.208.117:5432/msa_core_db
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@34.158.208.117:5672
+      # Server 1 IP(34.50.7.72) 사용
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@34.50.7.72:5432/msa_core_db
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@34.50.7.72:5672
     networks:
       - msa-network
 

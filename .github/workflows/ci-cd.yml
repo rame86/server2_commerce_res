@@ -37,10 +37,10 @@ jobs:
             
             # 1. 환경 변수 파일 생성 (Secrets 이름을 실제 등록한 이름과 맞춰줘)
             # DATABASE_URL 구성 시 POSTGRES_USER, POSTGRES_PASSWORD 사용
-            echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@34.158.208.117:5432/msa_res_db" > .env
+            echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@34.50.7.72:5432/msa_res_db" > .env
             
             # RabbitMQ 정보 (별도 Secret이 없다면 일단 직접 입력하거나 Secret 추가 후 수정)
-            echo "RABBITMQ_URL=amqp://msa_mq:mq1234@34.158.208.117:5672" >> .env
+            echo "RABBITMQ_URL=amqp://msa_mq:mq1234@34.50.7.72:5672" >> .env
             echo "PORT=8082" >> .env
             
             # 2. docker-compose.yml 생성 (기존과 동일)
