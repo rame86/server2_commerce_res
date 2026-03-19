@@ -3,6 +3,7 @@ name: Reservation Service CI/CD
 on:
   push:
     branches: [ master ]
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -23,27 +24,44 @@ jobs:
           docker build -t ${{ secrets.DOCKER_USERNAME }}/msa-reservation:latest .
           docker push ${{ secrets.DOCKER_USERNAME }}/msa-reservation:latest
 
-      # GCP Server 2 배포 (시크릿 이름 GCP_KEY로 수정)
+      # GCP Server 2 (서비스 서버) 배포
       - name: Deploy to GCP Server 2
         uses: appleboy/ssh-action@master
         with:
-          host: 34.50.60.193
-          username: oksm1003
+          host: ${{ secrets.GCP_SERVER_2 }}
+          username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_KEY }}
-          # Deploy to GCP Server 2 단계의 script 부분 수정
           script: |
-            mkdir -p /home/oksm1003/reservation
-            cd /home/oksm1003/reservation
+            # 작업 디렉터리 생성 및 이동 (동적 계정명 적용)
+            mkdir -p /home/${{ secrets.GCP_USER }}/reservation
+            cd /home/${{ secrets.GCP_USER }}/reservation
             
-            # 1. 환경 변수 파일 생성 (Secrets 이름을 실제 등록한 이름과 맞춰줘)
-            # DATABASE_URL 구성 시 POSTGRES_USER, POSTGRES_PASSWORD 사용
-            echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@34.50.7.72:5432/msa_res_db" > .env
+            # 1. 환경 변수 파일(.env) 동적 생성
+            cat <<EOF > .env
+            # PostgreSQL (1서버)
+            DATABASE_URL="postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.GCP_SERVER_1 }}:5432/msa_res_db?schema=res"
             
-            # RabbitMQ 정보 (별도 Secret이 없다면 일단 직접 입력하거나 Secret 추가 후 수정)
-            echo "RABBITMQ_URL=amqp://msa_mq:mq1234@34.50.7.72:5672" >> .env
-            echo "PORT=8082" >> .env
+            # RabbitMQ (1서버)
+            RABBITMQ_URL="amqp://${{ secrets.RABBITMQ_USER }}:${{ secrets.RABBITMQ_PASSWORD }}@${{ secrets.GCP_SERVER_1 }}:${{ secrets.RABBITMQ_PORT }}"
+            RABBITMQ_USER=${{ secrets.RABBITMQ_USER }}
+            RABBITMQ_PASSWORD=${{ secrets.RABBITMQ_PASSWORD }}
+            RABBITMQ_HOST=${{ secrets.GCP_SERVER_1 }}
             
-            # 2. docker-compose.yml 생성 (기존과 동일)
+            # Redis (1서버)
+            REDIS_HOST=${{ secrets.GCP_SERVER_1 }}
+            REDIS_PORT=${{ secrets.REDIS_PORT }}
+            # REDIS_PASSWORD=필요시 추가
+            
+            # App Config
+            PORT=8082
+            TZ=Asia/Seoul
+            
+            # Kakao API (Secret 이름 매핑 확인 요망)
+            KAKAO_REST_API_KEY=${{ secrets.KAKAO_PAY_SECRET_KEY }}
+            KAKAO_API_URL=https://dapi.kakao.com/v2/local/search/address.json
+            EOF
+            
+            # 2. docker-compose.yml 생성
             cat <<EOF > docker-compose.yml
             services:
               reservation:
@@ -61,7 +79,7 @@ jobs:
                 external: true
             EOF
             
-            # 3. 실행
+            # 3. 컨테이너 실행 및 사용하지 않는 이미지 정리
             docker compose pull
             docker compose up -d
             docker image prune -f
