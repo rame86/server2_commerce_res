@@ -1,13 +1,12 @@
 // src/controllers/eventController.js
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
-
+const prisma = require('../config/prisma');
 const eventService = require('../services/eventService');
 const resService = require('../services/resService'); // warmup 등을 위해 필요
 const eventRepository = require('../repositories/eventRepository'); // 이벤트 목록 조회용
 const redis = require('../config/redisClient'); // 🚀 Redis 클라이언트 필수!
 const mq = require('../config/rabbitMQ');
+const { SCALE_POLICIES, INTERNAL_VENUE_POLICY, INTERNAL_VENUES } = require('../constants/policy');
 
 /**
  * [1] 모든 이벤트(공연) 목록 조회
@@ -15,11 +14,14 @@ const mq = require('../config/rabbitMQ');
  */
 exports.getAllEvents = async (req, res) => {
     try {
+
+        // 🚨 핵심 포인트: req.query 에서 artistId를 꺼내서 레포지토리로 전달!
+        const { artistId } = req.query;
         // [Repository 패턴 활용] DB 계층에 직접 쿼리를 날리지 않고, 미리 정의된 리포지토리를 호출해 공연 목록을 가져옴
-        const events = await eventRepository.findAllEvents();
+        const events = await eventRepository.findAllEvents({ artistId });
         
         // [방어 코드] 만약 DB 결과가 아예 없거나 null이라면, 프론트엔드에서 map 함수 등을 쓸 때 에러가 나지 않게 빈 배열로 초기화함
-        if (!events) return res.status(200).json([]);
+        if (!events) return res.status(200).json({ events: [], totalReservations: 0 });
 
         /**
          * [BigInt 직렬화 처리] 
@@ -31,8 +33,21 @@ exports.getAllEvents = async (req, res) => {
             typeof value === 'bigint' ? value.toString() : value
         ));
 
+        // 🌟 [티켓 합계 계산] 각 공연의 예약 리스트를 돌며 합산
+        let totalTickets = 0;
+        safeEvents.forEach(event => {
+            if (event.reservations && Array.isArray(event.reservations)) {
+                event.reservations.forEach(resv => {
+                    totalTickets += (resv.ticket_count || 0);
+                });
+            }
+        });
+
         // [최종 응답] 직렬화 처리가 완료된 안전한 JSON 데이터를 클라이언트에 200 상태코드와 함께 전송함
-        res.status(200).json(safeEvents);
+        res.status(200).json({
+            events: safeEvents,
+            totalReservations: totalTickets
+        });
     } catch (err) {
         console.error("❌ 이벤트 조회 오류:", err); 
         res.status(500).json({ message: "공연 목록을 불러오지 못했습니다." });
@@ -94,8 +109,14 @@ exports.getEventDetail = async (req, res) => {
             typeof value === 'bigint' ? value.toString() : value
         ));
 
-        // [응답] 조회된 단일 공연 정보를 JSON 형태로 전송함
-        res.json(safeEvent);
+        /**
+         * 🌟 [핵심 수정] 
+         * 기존에는 safeEvent만 보냈지만, 이제 reservedSeats를 같이 보내줌!
+         */
+        res.json({
+            ...safeEvent,
+            reservedSeats: reservedSeatsList // 👈 프론트엔드가 이 이름을 기다리고 있어!
+        });
     } catch (error) {
         console.error("❌ 상세 조회 오류:", error);
         res.status(500).json({ message: "상세 조회 중 오류 발생" });
@@ -199,6 +220,21 @@ exports.requestEventApproval = async (req, res) => {
         const lat = coords ? coords.lat : null;
         const lng = coords ? coords.lng : null;
 
+        /**
+         * 🌟 [신규 로직] 수수료 및 정산 정책 자동 계산
+         * 공연장 이름(venue)을 확인해서 자체 공연장이면 20% 고정, 아니면 좌석 수(capacity)에 따라 차등 적용
+         */
+        const parsedCapacity = parseInt(total_capacity, 10);
+        let appliedPolicy;
+        
+        if (INTERNAL_VENUES.includes(venue)) {
+            // 자체 공연장(루미나50, 100, 200)이면 무조건 20% 적용
+            appliedPolicy = INTERNAL_VENUE_POLICY; // 자체 공연장(C)
+        } else {
+            // 외부 공연장이면 규모(좌석 수)에 따라 정책 매칭 (찾지 못하면 기본 소규모 적용)
+            appliedPolicy = SCALE_POLICIES.find(p => parsedCapacity >= p.min) || SCALE_POLICIES[2];
+        }
+
         // 관리자 확인용 스냅샷 (신규 필드 포함)
         const eventSnapshot = {
             title, artist_id, artist_name, event_type, description,
@@ -209,7 +245,9 @@ exports.requestEventApproval = async (req, res) => {
             running_time: parseInt(running_time, 10) || 0,
             is_standing: is_standing === true || is_standing === 'true',
             seat_map_config: seat_map_config || null,
-            images: images || []
+            images: images || [],
+            sales_commission_rate: appliedPolicy.rate,
+            settlement_type: appliedPolicy.type
         };
 
         /**
@@ -235,7 +273,7 @@ exports.requestEventApproval = async (req, res) => {
                     running_time: parseInt(running_time, 10) || 0,
                     is_standing: is_standing === true || is_standing === 'true',
                     seat_map_config: seat_map_config || null,
-                    approval_status: 'PENDING'
+                    approval_status: 'PENDING',
                 }
             });
 
@@ -269,7 +307,7 @@ exports.requestEventApproval = async (req, res) => {
                 }
             });
 
-            // 승인 ID 업데이트
+            // (5) 승인 ID 업데이트
             await tx.events.update({
                 where: { event_id: createdEvent.event_id },
                 data: { approval_id: createdApproval.approval_id }
@@ -289,10 +327,16 @@ exports.requestEventApproval = async (req, res) => {
             eventStartDate: formatToSpring(event_date),
             location: venue,
             price: Number(price),
-            // 추가된 디테일 정보
             ageLimit: parseInt(age_limit, 10) || 0,
             runningTime: parseInt(running_time, 10) || 0,
-            isStanding: is_standing === true || is_standing === 'true'
+            isStanding: is_standing === true || is_standing === 'true',
+            // 🌟 이 정보를 Java로 쏴줘야, 나중에 승인될 때 이 값을 다시 받아와서 DB에 저장할 수 있음!
+            salesCommissionRate: appliedPolicy.rate,
+            settlementType: appliedPolicy.type,
+            scaleGroup: appliedPolicy.group.substring(0, 1), // 문자열 1자리만 넘기기 (L, M, S, C)
+            // 🌟 [추가] 관리자 페이지에서 바로 이미지를 볼 수 있게 URL 전달
+            // 이미지 배열이 있다면 첫 번째 이미지(포스터)를 보내줌
+            imageUrl: (images && images.length > 0) ? images[0] : null
         };
 
         // RabbitMQ 전송 (라우팅 키: admin.event.request)

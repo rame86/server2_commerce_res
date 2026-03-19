@@ -3,8 +3,7 @@
  * 담당: Prisma를 이용한 공연 관련 PostgreSQL(Server 1) 데이터 제어
  */
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient(); 
+const prisma = require('../config/prisma');
 
 /**
  * [Redis Warm-up용 DB 재고 조회]
@@ -37,13 +36,35 @@ exports.findEventById = async (eventId) => {
 /**
  * [공연 목록 조회]
  */
-exports.findAllEvents = async () => {
+exports.findAllEvents = async (filters = {}) => {
     try {
+        let whereCondition = {};
+
+        // 🚨 여기가 핵심! artistId가 있으면 상태 상관없이 내 공연 싹 다 가져오기
+        if (filters.artistId && filters.artistId !== 'undefined') {
+            // 1. 아티스트 모드: 내 공연이면 PENDING, CONFIRMED 상관없이 싹 다 가져옴
+            whereCondition = { 
+                artist_id: BigInt(filters.artistId) 
+            };
+            console.log("✅ 아티스트 모드 조회:", filters.artistId);
+        } else {
+            // 일반 유저용: 승인된 공연만 노출
+            whereCondition = { 
+                approval_status: 'CONFIRMED' 
+            };
+            console.log("✅ 일반 유저 모드 조회");
+        }
+
         return await prisma.events.findMany({ 
-            where: { approval_status: 'CONFIRMED' },
+            where: whereCondition,
             include: {
                 event_locations: true,
-                event_images: true 
+                event_images: true,
+                // 🌟 _sum 대신 실제 예약 목록을 가져옴 (확정된 것만)
+                reservations: {
+                    where: { status: 'CONFIRMED' },
+                    select: { ticket_count: true } // 티켓 수량만 쏙 빼오기
+                }
             },
             orderBy: { event_date: 'asc' }
         });

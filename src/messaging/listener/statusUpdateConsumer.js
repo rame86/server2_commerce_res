@@ -1,7 +1,6 @@
 // src/messaging/listener/statusUpdateConsumer.js
 // 데이터베이스(Prisma), 캐시(Redis), 그리고 중앙 RabbitMQ 설정을 가져옴
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../config/prisma');
 const redis = require('../../config/redisClient');
 const { QUEUES, EXCHANGE, ROUTING_KEYS, getConnection } = require('../../config/rabbitMQ');
 

@@ -1,7 +1,7 @@
 // src/messaging/listener/refundResponseConsumer.js
+
+const prisma = require('../../config/prisma');
 const { QUEUES, EXCHANGE, ROUTING_KEYS, getConnection } = require('../../config/rabbitMQ');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
 
 /**
  * [관리자 환불 응답 리스너]

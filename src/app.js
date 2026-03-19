@@ -104,7 +104,15 @@ app.listen(PORT, async () => {
          * 티켓팅 오픈 전 DB의 최신 재고 데이터를 Redis로 미리 로드하여 
          * 첫 요청부터 초고속 선착순 처리가 가능하게 준비함.
          */
-        await eventService.warmupAllEventsToRedis();
+        setTimeout(async () => {
+            try {
+                console.log("🔄 [Warm-up] Starting Redis Warm-up...");
+                await eventService.warmupAllEventsToRedis();
+                console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
+            } catch (err) {
+                console.error("❌ [Warm-up Error] 초기화 중 오류 발생:", err.message);
+            }
+        }, 2000);
         
         console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
 

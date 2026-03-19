@@ -23,7 +23,7 @@ router.post('/reserve', resController.createReservation);
 // [GET] 특정 유저의 예약 상태 확인 (선택 사항)
 router.get('/reserve/status/:userId', resController.getReservationStatus);
 
-// [GET] 특정 유저의 예약 상태 확인 (선택 사항)
+// [GET] test
 router.get('/test', testController.handleTestRequest);
 
 // [POST] 사용자 직접 환불 요청
@@ -34,8 +34,13 @@ router.get('/events/:eventId/location', eventController.getEventLocation);
 
 // [GET] 특정 유저의 전체 예약 내역 조회 
 // 경로: /msa/res/member/:memberId
-
 router.get('/member/:memberId', resController.getMyReservations);
+
+// [GET] 특정 이벤트의 예매자 명단 조회 (아티스트 엑셀 다운로드용)
+router.get('/events/:eventId/reservations', resController.getEventReservations);
+
+// [GET] 아티스트 계정에서 조회되는 본인 이벤트 최근 5일 예매조회
+router.get('/artistreserve/:memberId', resController.getRecentTicketStats);
 
 /**
  * [POST] 모든 이벤트 재고 Redis 동기화 (관리자용 Warm-up)

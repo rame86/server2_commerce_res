@@ -30,14 +30,13 @@ model event_approvals {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model event_fee_policies {
   event_id              Int       @id
-  scale_group           String    @db.Char(1)
-  settlement_type       String    @db.VarChar(5)
+  scale_group           String    @db.VarChar(20)
+  settlement_type       String    @db.VarChar(20)
   sales_commission_rate Int
   created_at            DateTime? @default(now()) @db.Timestamptz(6)
   updated_at            DateTime? @default(now()) @db.Timestamptz(6)
   events                events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([event_id], map: "idx_fee_policy_event")
   @@schema("res")
 }
 
@@ -104,6 +103,27 @@ model events {
   @@schema("res")
 }
 
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model reservation_refunds {
+  refund_id        Int          @id @default(autoincrement())
+  reservation_id   String       @db.Uuid
+  member_id        BigInt
+  refund_amount    Int
+  refund_reason    String?
+  status           String?      @default("PENDING") @db.VarChar(20)
+  admin_id         BigInt?
+  rejection_reason String?
+  created_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  processed_at     DateTime?    @db.Timestamptz(6)
+  updated_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  reservations     reservations @relation(fields: [reservation_id], references: [reservation_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([reservation_id], map: "idx_refunds_reservation")
+  @@index([status], map: "idx_refunds_status")
+  @@schema("res")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model reservations {
   reservation_id      String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   event_id            Int
@@ -122,25 +142,5 @@ model reservations {
   @@index([event_id], map: "idx_reservations_event")
   @@index([member_id], map: "idx_reservations_member")
   @@index([status], map: "idx_reservations_status")
-  @@schema("res")
-}
-
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-model reservation_refunds {
-  refund_id        Int          @id @default(autoincrement())
-  reservation_id   String       @db.Uuid
-  member_id        BigInt
-  refund_amount    Int
-  refund_reason    String?
-  status           String?      @default("PENDING") @db.VarChar(20)
-  admin_id         BigInt?
-  rejection_reason String?
-  created_at       DateTime?    @default(now()) @db.Timestamptz(6)
-  processed_at     DateTime?    @db.Timestamptz(6)
-  updated_at       DateTime?    @default(now()) @db.Timestamptz(6)
-  reservations     reservations @relation(fields: [reservation_id], references: [reservation_id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([reservation_id], map: "idx_refunds_reservation")
-  @@index([status], map: "idx_refunds_status")
   @@schema("res")
 }

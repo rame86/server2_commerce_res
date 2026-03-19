@@ -303,3 +303,56 @@ exports.getMyReservations = async (memberId) => {
     }));
 };
 
+// 이벤트 예매자 명단 가져오기
+// 🌟 핵심: Repository에서 데이터를 받아와서 엑셀용으로 평탄화
+exports.getAttendesByEventId = async (eventId) => {
+    // 1. DB 조회는 Repository에게 위임
+    const reservations = await resRepository.findReservationsByEventId(eventId);
+    // 2. 비즈니스 로직: 프론트엔드가 엑셀로 만들기 편하게 데이터 구조 가공
+    return reservations.map(res => ({
+        reserveId: res.reservation_id,
+        // 핵심 주석: BigInt 타입은 JSON 직렬화 시 에러가 나므로 toString()으로 안전하게 변환
+        memberId: res.member_id.toString(), 
+        // 핵심 주석: MSA 구조상 예매 DB에는 이름/번호가 없으므로 임시 값 매핑 (필요시 User 서비스 API 호출 필요)
+        name: `회원 ${res.member_id.toString()}`, 
+        phone: '번호 확인 불가', 
+        status: res.status,
+        date: res.booked_at ? res.booked_at.toISOString().split('T')[0] : '날짜 없음',
+        ticketCount: res.ticket_count
+    }));
+}
+
+// [비즈니스 로직] 예매 통계 데이터 가공
+exports.getTicketStats = async (artistId) => {
+  // 1. 기준일 계산 (오늘 포함 5일 전 자정)
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 4);
+  startDate.setHours(0, 0, 0, 0);
+
+  // 2. DB에서 데이터 조회
+  const rawData = await resRepository.getRecentReservationsByArtist(artistId, startDate);
+
+  // 3. 최근 5일 날짜 맵 초기화 (예: {'03.14': 0, '03.15': 0, ...})
+  const statsMap = {};
+  for (let i = 4; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const mmdd = `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+    statsMap[mmdd] = 0;
+  }
+
+  // 4. 조회된 데이터로 티켓 수량 누적
+  rawData.forEach(row => {
+    const d = new Date(row.booked_at);
+    const mmdd = `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+    if (statsMap[mmdd] !== undefined) {
+      statsMap[mmdd] += row.ticket_count;
+    }
+  });
+
+  // 5. 프론트용 배열로 변환해서 리턴
+  return Object.keys(statsMap).map(date => ({
+    date,
+    count: statsMap[date]
+  }));
+};

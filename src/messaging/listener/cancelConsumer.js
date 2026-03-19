@@ -1,8 +1,7 @@
 // src/messaging/listener/cancelConsumer.js
 
 // 데이터베이스(Prisma)와 캐시(Redis), 그리고 RabbitMQ 설정을 가져옴
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../config/prisma');
 const redis = require('../../config/redisClient');
 const { QUEUES, getConnection } = require('../../config/rabbitMQ');
 

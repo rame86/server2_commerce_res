@@ -1,8 +1,6 @@
 // src/controllers/resController.js
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
-
+const prisma = require('../config/prisma');
 const resService = require('../services/resService');
 const redis = require('../config/redisClient'); 
 const { publishToQueue, ROUTING_KEYS } = require('../config/rabbitMQ');
@@ -169,5 +167,38 @@ exports.getMyReservations = async (req, res) => {
     } catch (error) {
         console.error("❌ 내 예매 조회 오류:", error);
         res.status(500).json({ message: "내역을 불러오는 중 오류가 발생했습니다." });
+    }
+};
+
+// [GET] 이벤트 예매자 명단 조회
+exports.getEventReservations = async (req, res) => {
+    try {
+        const {eventId} = req.params;
+        const attendes = await resService.getAttendesByEventId(eventId);
+
+        res.status(200).json(attendes);
+    } catch (error) {
+        console.log("예매자 명단 조회 에러", error);
+        res.status(500).json({message:"명단 조회에 실패했습니다."})
+    }
+}
+
+// [아티스트 대시보드] 최근 5일 예매건수 조회(빈 날짜는 0)
+exports.getRecentTicketStats = async (req, res) => {
+    try {
+        const {memberId} =req.params;
+
+        if(!memberId || isNaN(memberId)) {
+            return res.status(400).json({ success: false, message: '유효한 아티스트 ID가 아닙니다.'});
+        }
+        
+        const data = await resService.getTicketStats(memberId);
+        return res.status(200).json({
+            success: true,
+            data
+        });
+    } catch (error) {
+        console.error('[getRecentTicketStats] Error:', error);
+        return res.status(500).json({success: false, message: '통계 조회 실패'});
     }
 };
