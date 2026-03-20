@@ -33,60 +33,62 @@ exports.findEventById = async (eventId) => {
     });
 };
 
-/**
- * [공연 목록 조회]
- */
-exports.findAllEvents = async (filters = {}) => {
-    try {
-        let whereCondition = {};
-
-        // 🚨 여기가 핵심! artistId가 있으면 상태 상관없이 내 공연 싹 다 가져오기
-        if (filters.artistId && filters.artistId !== 'undefined') {
-            // 1. 아티스트 모드: 내 공연이면 PENDING, CONFIRMED 상관없이 싹 다 가져옴
-            whereCondition = { 
-                artist_id: BigInt(filters.artistId) 
-            };
-            console.log("✅ 아티스트 모드 조회:", filters.artistId);
-        } else {
-            // 일반 유저용: 승인된 공연만 노출
-            whereCondition = { 
-                approval_status: 'CONFIRMED' 
-            };
-            console.log("✅ 일반 유저 모드 조회");
-        }
-
-        return await prisma.events.findMany({ 
-            where: whereCondition,
-            include: {
-                event_locations: true,
-                event_images: true,
-                // 🌟 _sum 대신 실제 예약 목록을 가져옴 (확정된 것만)
-                reservations: {
-                    where: { status: 'CONFIRMED' },
-                    select: { ticket_count: true } // 티켓 수량만 쏙 빼오기
-                }
-            },
-            orderBy: { event_date: 'asc' }
-        });
-    } catch (err) {
-        console.error("❌ Repository findAllEvents 에러:", err);
-        throw err;
-    }
-};
+// [src/repositories/eventRepository.js]
 
 /**
- * [승인 대기열 조회]
+ * [유저용] 승인된 모든 공연 목록 조회
  */
-exports.findApprovalById = async (eventId) => {
-    if (!eventId) {
-        throw new Error("eventId(approvalId)가 전달되지 않았어!");
-    }
-    return await prisma.event_approvals.findFirst({
-        where: {
-            event_id: parseInt(eventId, 10)
-        }
+exports.findAllEvents = async () => {
+    return await prisma.events.findMany({ 
+        where: { approval_status: 'CONFIRMED' }, // 무조건 승인된 것만
+        include: {
+            event_locations: true,
+            event_images: true,
+            reservations: {
+                where: { status: 'CONFIRMED' },
+                select: { ticket_count: true }
+            }
+        },
+        orderBy: { event_date: 'asc' }
     });
 };
+
+/**
+ * [유저용] 승인된 모든 공연 목록 조회
+ */
+exports.findAllEvents = async () => {
+    return await prisma.events.findMany({ 
+        where: { approval_status: 'CONFIRMED' }, // 무조건 승인된 것만
+        include: {
+            event_locations: true,
+            event_images: true,
+            reservations: {
+                where: { status: 'CONFIRMED' },
+                select: { ticket_count: true }
+            }
+        },
+        orderBy: { event_date: 'asc' }
+    });
+};
+
+/**
+ * [아티스트용] 본인이 신청한 모든 공연 조회 (상태 상관없음)
+ */
+exports.findArtistEvents = async (artistId) => {
+    return await prisma.events.findMany({ 
+        where: { artist_id: BigInt(artistId) }, // 내 것만
+        include: {
+            event_locations: true,
+            event_images: true,
+            reservations: {
+                where: { status: 'CONFIRMED' },
+                select: { ticket_count: true }
+            }
+        },
+        orderBy: { created_at: 'desc' } // 최신 신청순
+    });
+};
+
 
 /**
  * [공연 등록 신청 - Repository] 
@@ -197,5 +199,20 @@ exports.rejectEvent = async (tx, eventId, adminId, reason) => {
 exports.getFeePolicy = async (eventId) => {
     return await prisma.event_fee_policies.findUnique({
         where: { event_id: parseInt(eventId, 10) }
+    });
+};
+
+//유저 대시보드 이벤트 [내 예매 내역 조회]
+exports.findConfirmedReservationsByUserId = async (userId) => {
+    return await prisma.reservations.findMany({
+        where: {
+            user_id: BigInt(userId),
+            status: 'CONFIRMED'
+        },
+        include: {
+            events: {
+                include: { event_locations: true }
+            }
+        }
     });
 };
