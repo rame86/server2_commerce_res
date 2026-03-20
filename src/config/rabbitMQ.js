@@ -3,7 +3,7 @@ require('dotenv').config();
 
 let connection = null; 
 let channel = null;    
-
+ 
 // 🌟 Java 서버(Admin) 상수와 100% 일치
 const QUEUES = {
     RESERVATION: 'reservation.queue',
