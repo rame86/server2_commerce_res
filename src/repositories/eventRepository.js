@@ -38,21 +38,17 @@ exports.findEventById = async (eventId) => {
  */
 exports.findAllEvents = async (filters = {}) => {
     try {
-        let whereCondition = {};
+        // [1] 기본 조건: 승인된 공연만 가져오기 (가장 중요)
+        let whereCondition = { 
+            approval_status: 'CONFIRMED' 
+        };
 
-        // 🚨 여기가 핵심! artistId가 있으면 상태 상관없이 내 공연 싹 다 가져오기
+        // [2] 아티스트 필터가 있을 경우 조건 추가
         if (filters.artistId && filters.artistId !== 'undefined') {
-            // 1. 아티스트 모드: 내 공연이면 PENDING, CONFIRMED 상관없이 싹 다 가져옴
-            whereCondition = { 
-                artist_id: BigInt(filters.artistId) 
-            };
-            console.log("✅ 아티스트 모드 조회:", filters.artistId);
+            whereCondition.artist_id = BigInt(filters.artistId);
+            console.log("✅ 특정 아티스트의 승인된 공연 조회:", filters.artistId);
         } else {
-            // 일반 유저용: 승인된 공연만 노출
-            whereCondition = { 
-                approval_status: 'CONFIRMED' 
-            };
-            console.log("✅ 일반 유저 모드 조회");
+            console.log("✅ 모든 아티스트의 승인된 공연 조회");
         }
 
         return await prisma.events.findMany({ 
@@ -60,10 +56,9 @@ exports.findAllEvents = async (filters = {}) => {
             include: {
                 event_locations: true,
                 event_images: true,
-                // 🌟 _sum 대신 실제 예약 목록을 가져옴 (확정된 것만)
                 reservations: {
                     where: { status: 'CONFIRMED' },
-                    select: { ticket_count: true } // 티켓 수량만 쏙 빼오기
+                    select: { ticket_count: true }
                 }
             },
             orderBy: { event_date: 'asc' }
