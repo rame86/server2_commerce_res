@@ -208,3 +208,19 @@ exports.getRecentReservationsByArtist = async (artistId, startDate) => {
     }
   });
 };
+
+
+/**
+ * [상태 조회] 티켓 코드로 현재 예약 상태 확인
+ * 폴링 서비스 및 상태 체크 로직에서 사용
+ */
+exports.getStatusByTicketCode = async (ticketCode) => {
+    /**
+     * [단일 필드 조회]
+     * ticket_code는 UNIQUE 제약조건이 걸려있으므로 findUnique로 빠르게 조회 가능함
+     */
+    return await prisma.reservations.findUnique({
+        where: { ticket_code: ticketCode },
+        select: { status: true } // 🌟 성능 최적화: 상태값만 쏙 뽑아옴
+    });
+};

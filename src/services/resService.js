@@ -356,3 +356,27 @@ exports.getTicketStats = async (artistId) => {
     count: statsMap[date]
   }));
 };
+
+
+// src/services/resService.js
+
+/**
+ * [추가] 티켓 코드로 예약 상태 조회
+ * 폴링 API에서 현재 예약의 상태(PENDING, CONFIRMED 등)를 확인하기 위해 사용
+ */
+exports.checkStatus = async (ticketCode) => {
+    try {
+        const reservation = await prisma.reservations.findUnique({
+            where: { ticket_code: ticketCode }
+        });
+
+        if (!reservation) {
+            return 'NOT_FOUND';
+        }
+
+        return reservation.status; // PENDING, CONFIRMED, FAILED 등이 반환됨
+    } catch (error) {
+        console.error("[resService.checkStatus] Error:", error);
+        throw error;
+    }
+};

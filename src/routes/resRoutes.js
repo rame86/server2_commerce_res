@@ -42,6 +42,10 @@ router.get('/events/:eventId/reservations', resController.getEventReservations);
 // [GET] 아티스트 계정에서 조회되는 본인 이벤트 최근 5일 예매조회
 router.get('/artistreserve/:memberId', resController.getRecentTicketStats);
 
+// [GET] 특정 유저의 예약 상태 확인 (프론트엔드 폴링 주소와 일치시킴)
+// 🌟 /reserve/status/:userId 를 아래와 같이 변경
+router.get('/reservations/status/:ticketCode', resController.getReservationStatus);
+
 /**
  * [POST] 모든 이벤트 재고 Redis 동기화 (관리자용 Warm-up)
  * 💡 수정: 라우터에서 Service를 직접 require하지 말고 Controller에 함수를 하나 만들어서 연결해.
