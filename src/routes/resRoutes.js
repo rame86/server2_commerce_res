@@ -9,6 +9,10 @@ const testController = require('../controllers/testController');
 // [GET] 이벤트 전체 목록 조회
 router.get('/events', eventController.getAllEvents); // 👈 eventController로 변경
 
+// [GET] 아티스트용: 본인이 신청한 공연 목록 조회 (Private/Management)
+// 예: /msa/res/events/my?artistId=1
+router.get('/events/my', eventController.getMyEvents);
+
 // [POST] 🌟 새로운 공연 등록 (Redis 동기화 로직 포함된 버전)
 // 예: http://localhost:8082/events
 router.post('/events', eventController.requestEventApproval);
@@ -45,6 +49,9 @@ router.get('/artistreserve/:memberId', resController.getRecentTicketStats);
 // [GET] 특정 유저의 예약 상태 확인 (프론트엔드 폴링 주소와 일치시킴)
 // 🌟 /reserve/status/:userId 를 아래와 같이 변경
 router.get('/reservations/status/:ticketCode', resController.getReservationStatus);
+
+// [POST] 유저대시보드 
+router.post('/dashboard/dashboard-queue', eventController.sendDashboardQueues);
 
 /**
  * [POST] 모든 이벤트 재고 Redis 동기화 (관리자용 Warm-up)
