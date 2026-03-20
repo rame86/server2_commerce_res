@@ -7,31 +7,34 @@ const { publishToQueue, ROUTING_KEYS } = require('../config/rabbitMQ');
 
 // [1] 예매 생성 (🚀 예약 도메인의 핵심 로직)
 exports.createReservation = async (req, res) => {
-    // [데이터 바인딩] 클라이언트가 보낸 바디값에서 이벤트ID, 티켓 수량, 회원ID를 추출함
-    const { event_id, ticket_count, member_id, selected_seats } = req.body;
-    
-    // [타입 보정] 문자열로 들어올 수 있는 티켓 수량을 연산을 위해 정수형(Int)으로 변환함
-    const count = parseInt(ticket_count, 10);
-    
-    // [인증 확인] 헤더의 Authorization 필드에서 JWT 토큰 문자열만 분리하여 추출함
-    const clientToken = req.headers.authorization?.split(' ')[1];
+    // [1] 데이터 바인딩: 필요한 정보만 바디에서 추출
+    const { event_id, ticket_count, selected_seats } = req.body;
 
-    // [방어 코드] 토큰이 아예 없는 비정상적인 접근일 경우 401 인증 에러로 즉시 차단함
-    if (!clientToken) return res.status(401).json({ message: "토큰이 없습니다." });
+    /**
+     * 🌟 게이트웨이(OpenResty) 보안 연동
+     * 게이트웨이가 JWT를 검증한 후 'x-user-id' 헤더에 memberId를 넣어주므로
+     * 프론트에서 보내는 member_id나 Authorization 헤더를 직접 파싱할 필요가 없음!
+     */
+    const member_id = req.headers['x-user-id'];
+    
+    // [보안 검사] 게이트웨이를 거치지 않은 비정상 요청 차단
+    if (!member_id) {
+        return res.status(401).json({ message: "인증 정보가 없습니다. 다시 로그인해주세요." });
+    }
+
+    // [타입 보정] 정수 연산을 위해 숫자로 변환
+    const count = parseInt(ticket_count, 10);
 
     try {
         /**
          * [비즈니스 로직 1단계: 선검증 및 재고 확보]
-         * 서비스 계층을 통해 Redis에서 실시간 재고를 차감하고, 유저의 잔액이 충분한지 등을 종합적으로 검증함.
-         * 이 단계가 성공해야만 '티켓 번호'와 '총 결제 금액'이 생성됨.
-         * 🌟 (수정) 추가로 DB에 저장된 순수 티켓 원가(ticketPrice)와 아티스트 판매 수수료율(salesCommissionRate)도 가져옴.
+         * Redis 재고 차감 및 유저 잔액 검증
          */
         const bookingDetail = await resService.validateAndPrepare(event_id, count, member_id);
         
         /**
-         * [비즈니스 로직 2단계: 예약 가저장]
-         * 아직 결제가 완료된 것은 아니지만, 선점한 자리에 대해 DB에 'PENDING(대기)' 상태로 기록을 남김.
-         * 이는 추후 결제 서버로부터 응답을 받았을 때 상태를 업데이트하기 위한 기초 데이터가 됨.
+         * [비즈니스 로직 2단계: 예약 가저장 (PENDING)]
+         * DB에 대기 상태로 기록
          */
         await resService.makeReservation({
             event_id,
@@ -39,36 +42,30 @@ exports.createReservation = async (req, res) => {
             total_price: bookingDetail.totalPrice,
             booking_fee: bookingDetail.bookingFee,
             ticket_code: bookingDetail.ticketCode,
-            selected_seats // 🌟 2. [데이터 전달 추가] 서비스 계층으로 좌석 배열 데이터 넘겨주기
+            selected_seats 
         }, member_id);
 
         /**
-         * [비즈니스 로직 3단계: 분산 트랜잭션 시작]
-         * 예약 로직은 여기서 멈추고, 실제 돈을 차감하는 작업은 메시지 큐(RabbitMQ)를 통해 결제 서버로 위임함.
-         * 이를 통해 예약 서버는 결제가 끝날 때까지 기다리지 않고 다음 사용자의 요청을 바로 받을 수 있음.
+         * [비즈니스 로직 3단계: 분산 트랜잭션 (MQ 발송)]
+         * 결제 서버로 작업 위임
          */
         const messagePayload = {
-            orderId: bookingDetail.ticketCode,         // 🌟 bookingDetail로 수정 완료
-            memberId: Number(member_id),
+            orderId: bookingDetail.ticketCode,
+            memberId: Number(member_id), // 헤더값은 문자열이므로 숫자로 변환
             amount: Number(bookingDetail.totalPrice),
             artistId: bookingDetail.artistId ? Number(bookingDetail.artistId) : null,
             originalPrice: Number(bookingDetail.ticketPrice), 
             fee: Number(bookingDetail.salesCommissionRate),
-            quantity: Number(bookingDetail.quantity),  // 🌟 서비스 규격(quantity)에 맞춤
+            quantity: Number(bookingDetail.quantity),
             type: "PAYMENT",
             eventTitle: bookingDetail.eventTitle,
             replyRoutingKey: ROUTING_KEYS.STATUS_UPDATE
         };
         
-        // [MQ 발행] 결제 서비스가 구독 중인 큐(pay.request.queue)로 데이터를 쏘아 보냄
         await publishToQueue(ROUTING_KEYS.PAY_REQUEST, messagePayload);
         console.log(`🚀 [MQ 전송] 결제 요청 발송 완료: ${bookingDetail.ticketCode}`);
 
-        /**
-         * [최종 응답: 202 Accepted]
-         * '200 OK'가 아닌 '202'를 반환하는 것은 "요청은 접수되었고 처리는 비동기로 진행 중"임을 뜻하는 
-         * RESTful API의 표준 관례임. 사용자는 티켓 코드를 받고 결과를 기다리는 상태가 됨.
-         */
+        // 최종 응답 (202 Accepted)
         res.status(202).json({ 
             message: "예약 요청이 성공적으로 접수되었습니다.",
             ticket_id: bookingDetail.ticketCode,
@@ -76,7 +73,6 @@ exports.createReservation = async (req, res) => {
         });
 
     } catch (error) {
-        // [에러 핸들링] 서비스 계층에서 던진 400(재고부족), 401(인증불가) 등의 상태 코드를 그대로 전달함
         console.error("❌ 예약 처리 중 오류:", error);
         res.status(error.status || 500).json({ message: error.message || "서버 오류" });
     }
@@ -154,9 +150,9 @@ exports.requestRefund = async (req, res) => {
 // [4] 내 예매 내역 조회
 exports.getMyReservations = async (req, res) => {
     try {
-        // [수정] 인증 미들웨어가 없으므로 URL 파라미터(:memberId)에서 직접 가져옴
-        const { memberId } = req.params; 
-
+        // 🌟 수정: URL 파라미터(:memberId) 대신 게이트웨이 헤더 사용
+        // 이렇게 하면 주소창에 남의 ID를 쳐도 자기 것만 나옴!
+        const memberId = req.headers['x-user-id'];
 
         // memberId가 아예 안 들어왔을 경우만 체크
         if (!memberId) {

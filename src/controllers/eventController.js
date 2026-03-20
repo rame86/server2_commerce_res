@@ -27,7 +27,7 @@ exports.getAllEvents = async (req, res) => {
 // [2] 아티스트용: 내 공연 목록 조회
 exports.getMyEvents = async (req, res) => {
     try {
-        const { artistId } = req.query;
+        const artistId = req.headers['x-user-id'];
         if (!artistId) return res.status(400).json({ message: "artistId 누락" });
 
         const events = await eventRepository.findArtistEvents(artistId); // 레포지토리 이름 유지
@@ -446,7 +446,7 @@ exports.sendDashboardQueues = async (req, res) => {
         });
 
         // [2] 로그인 유저의 예매 내역 조회
-        const userId = req.user?.id; 
+        const userId = req.headers['x-user-id'];
 
         if (userId) {
             // 레포지토리 함수 호출하여 확정된 내역만 가져옴
