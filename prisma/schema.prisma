@@ -94,6 +94,7 @@ model events {
   event_fee_policies                                  event_fee_policies?
   event_images                                        event_images[]
   event_locations                                     event_locations?
+  event_wishlists                                     event_wishlists[]
   event_approvals_events_approval_idToevent_approvals event_approvals?    @relation("events_approval_idToevent_approvals", fields: [approval_id], references: [approval_id], onUpdate: NoAction, map: "fk_events_approval_id")
   reservations                                        reservations[]
 
@@ -142,5 +143,19 @@ model reservations {
   @@index([event_id], map: "idx_reservations_event")
   @@index([member_id], map: "idx_reservations_member")
   @@index([status], map: "idx_reservations_status")
+  @@schema("res")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model event_wishlists {
+  wishlist_id Int       @id @default(autoincrement())
+  member_id   BigInt
+  event_id    Int
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  events      events    @relation(fields: [event_id], references: [event_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([member_id, event_id], map: "uq_member_event_wishlist")
+  @@index([event_id], map: "idx_wishlists_event_id")
+  @@index([member_id], map: "idx_wishlists_member_id")
   @@schema("res")
 }
