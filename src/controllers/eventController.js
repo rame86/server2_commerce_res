@@ -54,30 +54,35 @@ exports.getAllEvents = async (req, res) => {
     }
 };
 
-/*
- * [2] 특정 이벤트 상세 정보 조회 (위시리스트 상태 포함)
+/**
+ * [2] 특정 이벤트 상세 정보 조회
  */
 exports.getEventDetail = async (req, res) => {
     try {
         const { eventId } = req.params;
-        // 🌟 프론트엔드에서 넘겨주는 로그인한 유저 ID (없을 수도 있음)
-        const { memberId } = req.query; 
+        const { memberId } = req.query; // 프론트에서 보낸 ?memberId=1
         const parsedEventId = parseInt(eventId, 10);
+
+        // 1. Prisma 조회 시 include를 조건부로 처리
+        const includeOptions = {
+            event_locations: true,
+        };
+
+        // 🌟 중요: memberId가 있을 때만 위시리스트 포함 (false를 넣으면 에러 남!)
+        if (memberId && memberId !== 'undefined' && memberId !== 'null') {
+            includeOptions.event_wishlists = {
+                where: { member_id: BigInt(memberId) }
+            };
+        }
 
         const event = await prisma.events.findUnique({
             where: { event_id: parsedEventId },
-            include: {
-                event_locations: true,
-                // 🌟 추가: 위시리스트 테이블에서 현재 유저의 데이터가 있는지 확인
-                event_wishlists: memberId ? {
-                    where: { member_id: BigInt(memberId) }
-                } : false
-            }
+            include: includeOptions
         });
         
         if (!event) return res.status(404).json({ message: "공연을 찾을 수 없습니다." });
 
-        // 🌟 예약된 좌석 목록 가져오기 로직 (기존과 동일)
+        // 2. 예약된 좌석 목록 가져오기 (기존 로직 유지)
         const reservations = await prisma.reservations.findMany({
             where: {
                 event_id: parsedEventId,
@@ -94,24 +99,24 @@ exports.getEventDetail = async (req, res) => {
             }
         });
 
-        // 🌟 찜 여부 결정 (데이터가 있으면 true, 없거나 비로그인이면 false)
-        const isWishlisted = event.event_wishlists?.length > 0;
+        // 3. 찜 여부 판단
+        const isWishlisted = !!(event.event_wishlists && event.event_wishlists.length > 0);
         
-        // [BigInt 처리]
-        const safeEvent = JSON.parse(JSON.stringify(event, (key, value) =>
+        // 4. 🌟 BigInt 포함된 객체를 안전하게 변환 (500 에러 방지 핵심)
+        const responseData = JSON.parse(JSON.stringify({
+            ...event,
+            isWishlisted,
+            reservedSeats: reservedSeatsList
+        }, (key, value) =>
             typeof value === 'bigint' ? value.toString() : value
         ));
 
-        // 🌟 최종 응답: 기존 데이터 + 찜 여부 + 예약 좌석
-        res.json({
-            ...safeEvent,
-            isWishlisted: isWishlisted, // 👈 프론트엔드 하트 색깔 결정용
-            reservedSeats: reservedSeatsList
-        });
+        res.json(responseData);
 
     } catch (error) {
-        console.error("❌ 상세 조회 오류:", error);
-        res.status(500).json({ message: "상세 조회 중 오류 발생" });
+        // 서버 로그에서 진짜 원인을 볼 수 있게 출력
+        console.error("❌ 상세 조회 서버 오류:", error); 
+        res.status(500).json({ message: "상세 조회 중 오류 발생", error: error.message });
     }
 };
 
@@ -370,38 +375,60 @@ exports.warmupRedis = async (req, res) => {
 };
 
 
-// wishlistController.js
-exports.toggleWishlist = async (req, res) => {
-    const { member_id, event_id } = req.body;
-
+exports.getEventDetail = async (req, res) => {
     try {
-        // 1. 이미 찜했는지 확인
-        const existing = await prisma.event_wishlists.findUnique({
+        const { eventId } = req.params;
+        const { memberId } = req.query; // 쿼리스트링으로 받음
+        const parsedEventId = parseInt(eventId, 10);
+
+        // 1. 이벤트 정보 조회 (찜 여부 포함)
+        const event = await prisma.events.findUnique({
+            where: { event_id: parsedEventId },
+            include: {
+                event_locations: true,
+                // memberId가 유효할 때만 위시리스트 확인
+                event_wishlists: (memberId && memberId !== 'undefined' && memberId !== 'null') ? {
+                    where: { member_id: BigInt(memberId) }
+                } : false
+            }
+        });
+        
+        if (!event) return res.status(404).json({ message: "공연을 찾을 수 없습니다." });
+
+        // 2. 예약석 목록 가져오기 로직 (기존 유지)
+        const reservations = await prisma.reservations.findMany({
             where: {
-                member_id_event_id: {
-                    member_id: BigInt(member_id),
-                    event_id: parseInt(event_id)
-                }
+                event_id: parsedEventId,
+                status: { notIn: ['FAILED', 'REFUNDED'] },
+                selected_seats: { not: null }
+            },
+            select: { selected_seats: true }
+        });
+
+        let reservedSeatsList = [];
+        reservations.forEach(r => {
+            if (Array.isArray(r.selected_seats)) {
+                reservedSeatsList.push(...r.selected_seats);
             }
         });
 
-        if (existing) {
-            // 2. 있으면 삭제 (찜 취소)
-            await prisma.event_wishlists.delete({
-                where: { wishlist_id: existing.wishlist_id }
-            });
-            return res.json({ isWishlisted: false, message: "위시리스트에서 삭제되었습니다." });
-        } else {
-            // 3. 없으면 생성 (찜 추가)
-            await prisma.event_wishlists.create({
-                data: {
-                    member_id: BigInt(member_id),
-                    event_id: parseInt(event_id)
-                }
-            });
-            return res.json({ isWishlisted: true, message: "위시리스트에 추가되었습니다." });
-        }
+        // 3. 찜 여부 계산
+        const isWishlisted = !!(event.event_wishlists && event.event_wishlists.length > 0);
+        
+        // 4. 🌟 핵심: 전체 데이터를 BigInt 안전하게 직렬화
+        // responseData를 만들 때 모든 필드를 포함시켜야 500 에러가 안 나.
+        const responseData = JSON.parse(JSON.stringify({
+            ...event,
+            isWishlisted: isWishlisted,
+            reservedSeats: reservedSeatsList
+        }, (key, value) =>
+            typeof value === 'bigint' ? value.toString() : value
+        ));
+
+        res.json(responseData);
+
     } catch (error) {
-        res.status(500).json({ message: "위시리스트 처리 중 오류 발생" });
+        console.error("❌ 상세 조회 서버 오류:", error);
+        res.status(500).json({ message: "상세 조회 중 오류 발생", error: error.message });
     }
 };
