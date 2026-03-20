@@ -54,69 +54,61 @@ exports.getAllEvents = async (req, res) => {
     }
 };
 
-/**
- * [2] 특정 이벤트 상세 정보 조회
+/*
+ * [2] 특정 이벤트 상세 정보 조회 (위시리스트 상태 포함)
  */
 exports.getEventDetail = async (req, res) => {
     try {
-        // [파라미터 추출] 클라이언트가 요청한 URL 경로에서 :eventId 변수값을 꺼내옴
         const { eventId } = req.params;
+        // 🌟 프론트엔드에서 넘겨주는 로그인한 유저 ID (없을 수도 있음)
+        const { memberId } = req.query; 
         const parsedEventId = parseInt(eventId, 10);
 
-        /**
-         * [단일 레코드 조회] 
-         * URL 파라미터는 문자열이므로 parseInt를 통해 10진수 숫자로 변환함. 
-         * Prisma의 findUnique는 PK(Primary Key)를 사용하여 가장 빠른 속도로 하나의 데이터를 조회함.
-         */
         const event = await prisma.events.findUnique({
             where: { event_id: parsedEventId },
             include: {
-                event_locations: true // 👈 이 부분이 추가되어야 venue를 가져올 수 있어!
+                event_locations: true,
+                // 🌟 추가: 위시리스트 테이블에서 현재 유저의 데이터가 있는지 확인
+                event_wishlists: memberId ? {
+                    where: { member_id: BigInt(memberId) }
+                } : false
             }
         });
         
-        // [예외 처리] 만약 해당 ID로 조회된 공연이 없다면, 리소스가 없음을 알리는 404 상태코드를 반환함
         if (!event) return res.status(404).json({ message: "공연을 찾을 수 없습니다." });
 
-        // 🌟 [추가 로직] 해당 공연의 "취소/환불" 되지 않은 유효한 예약 좌석 싹 긁어오기
+        // 🌟 예약된 좌석 목록 가져오기 로직 (기존과 동일)
         const reservations = await prisma.reservations.findMany({
             where: {
                 event_id: parsedEventId,
-                status: {
-                    notIn: ['FAILED', 'REFUNDED'] // 취소되거나 환불된 건 좌석을 다시 풀어줘야 하니까 제외!
-                },
-                selected_seats: {
-                    not: null // 좌석 정보가 NULL이 아닌 것만 가져오기
-                }
+                status: { notIn: ['FAILED', 'REFUNDED'] },
+                selected_seats: { not: null }
             },
-            select: {
-                selected_seats: true
+            select: { selected_seats: true }
+        });
+
+        let reservedSeatsList = [];
+        reservations.forEach(r => {
+            if (Array.isArray(r.selected_seats)) {
+                reservedSeatsList.push(...r.selected_seats);
             }
         });
 
-        // 🌟 [배열 합치기] 각각의 예약에서 가져온 좌석 배열을 하나의 1차원 배열로 쫙 펴줌
-        // 예: [ {selected_seats: ["E1", "E2"]}, {selected_seats: ["A1"]} ] 
-        // -> ["E1", "E2", "A1"]
-        let reservedSeatsList = [];
-        reservations.forEach(res => {
-            if (Array.isArray(res.selected_seats)) {
-                reservedSeatsList.push(...res.selected_seats);
-            }
-        });
+        // 🌟 찜 여부 결정 (데이터가 있으면 true, 없거나 비로그인이면 false)
+        const isWishlisted = event.event_wishlists?.length > 0;
         
-        // [BigInt 처리] (필요하다면 getAllEvents처럼 직렬화 로직 추가 가능)
+        // [BigInt 처리]
         const safeEvent = JSON.parse(JSON.stringify(event, (key, value) =>
             typeof value === 'bigint' ? value.toString() : value
         ));
 
-        /**
-         * 🌟 [핵심 수정] 
-         * 기존에는 safeEvent만 보냈지만, 이제 reservedSeats를 같이 보내줌!
-         */
+        // 🌟 최종 응답: 기존 데이터 + 찜 여부 + 예약 좌석
         res.json({
             ...safeEvent,
-            reservedSeats: reservedSeatsList // 👈 프론트엔드가 이 이름을 기다리고 있어!
+            isWishlisted: isWishlisted, // 👈 프론트엔드 하트 색깔 결정용
+            reservedSeats: reservedSeatsList
         });
+
     } catch (error) {
         console.error("❌ 상세 조회 오류:", error);
         res.status(500).json({ message: "상세 조회 중 오류 발생" });
@@ -374,5 +366,42 @@ exports.warmupRedis = async (req, res) => {
     } catch (err) {
         console.error("❌ Admin Warmup Error:", err);
         res.status(500).json({ error: err.message });
+    }
+};
+
+
+// wishlistController.js
+exports.toggleWishlist = async (req, res) => {
+    const { member_id, event_id } = req.body;
+
+    try {
+        // 1. 이미 찜했는지 확인
+        const existing = await prisma.event_wishlists.findUnique({
+            where: {
+                member_id_event_id: {
+                    member_id: BigInt(member_id),
+                    event_id: parseInt(event_id)
+                }
+            }
+        });
+
+        if (existing) {
+            // 2. 있으면 삭제 (찜 취소)
+            await prisma.event_wishlists.delete({
+                where: { wishlist_id: existing.wishlist_id }
+            });
+            return res.json({ isWishlisted: false, message: "위시리스트에서 삭제되었습니다." });
+        } else {
+            // 3. 없으면 생성 (찜 추가)
+            await prisma.event_wishlists.create({
+                data: {
+                    member_id: BigInt(member_id),
+                    event_id: parseInt(event_id)
+                }
+            });
+            return res.json({ isWishlisted: true, message: "위시리스트에 추가되었습니다." });
+        }
+    } catch (error) {
+        res.status(500).json({ message: "위시리스트 처리 중 오류 발생" });
     }
 };
