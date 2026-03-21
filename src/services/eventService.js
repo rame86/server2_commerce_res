@@ -235,3 +235,19 @@ exports.processAdminResponse = async (response) => {
 
     return result;
 };
+
+
+//이벤트 파일저장
+exports.requestEvent = async (eventData) => {
+    try {
+        // 1. 비즈니스 로직 처리 (예: 유효성 검사 등)
+        if (!eventData.title) throw new Error("제목이 없어!");
+
+        // 2. 🌟 Repository에게 DB 저장 시키기
+        const savedEvent = await eventRepository.save(eventData);
+        
+        return { success: true, data: savedEvent };
+    } catch (error) {
+        throw new Error("DB 저장 실패: " + error.message);
+    }
+};

@@ -9,3 +9,5 @@ node_modules/
 
 # 2. 변경된 스키마를 바탕으로 Prisma Client 생성 (Prisma -> Node.js 코드 적용)
 #npx prisma generate
+
+#npm install multer

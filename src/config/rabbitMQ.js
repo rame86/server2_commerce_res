@@ -17,7 +17,9 @@ const QUEUES = {
 
     // 환불 관련 (Java 규격 일치)
     REFUND_REQ_ADMIN: 'refund.req.core.queue', 
-    REFUND_RES_CORE: 'refund.res.core.queue' 
+    REFUND_RES_CORE: 'refund.res.core.queue',
+
+    DASHBOARD_ALL: 'dashboard.all.queue'
 };
 
 const ROUTING_KEYS = {
@@ -30,7 +32,9 @@ const ROUTING_KEYS = {
 
     // 환불 관련 (Java 규격 일치)
     REFUND_REQ_ADMIN: 'refund.req.core', 
-    REFUND_RES_CORE: 'refund.res.core' 
+    REFUND_RES_CORE: 'refund.res.core',
+
+    DASHBOARD_ALL: 'dashboard.all'
 };
 
 const EXCHANGE = 'msa.direct.exchange';
@@ -57,7 +61,11 @@ const connectRabbitMQ = async () => {
         await channel.assertQueue(QUEUES.REFUND_RES_CORE, { durable: true });
         await channel.bindQueue(QUEUES.REFUND_RES_CORE, EXCHANGE, ROUTING_KEYS.REFUND_RES_CORE);
 
-        console.log("✅ RabbitMQ 연결 및 모든 큐(이벤트/환불) 바인딩 성공");
+        // 3. 대시보드용 큐 바인딩 추가
+        await channel.assertQueue(QUEUES.DASHBOARD_ALL, { durable: true });
+        await channel.bindQueue(QUEUES.DASHBOARD_ALL, EXCHANGE, ROUTING_KEYS.DASHBOARD_ALL);
+
+        console.log("✅ RabbitMQ 연결 및 모든 큐(이벤트/환불/대시보드) 바인딩 성공");
     } catch (error) {
         console.error("❌ RabbitMQ 연결 실패:", error);
     }
