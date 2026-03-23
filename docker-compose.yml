@@ -10,6 +10,9 @@ services:
       # Server 1 IP(34.50.7.72) 사용
       - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@34.50.7.72:5432/msa_core_db
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@34.50.7.72:5672
+    volumes:
+      # [핵심] 외부 볼륨 지정: 호스트(GCP)와 컨테이너 내부 경로 연결
+      - /home/oksm1003/images/res:/app/public/images/res
     networks:
       - msa-network
 

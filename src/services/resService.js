@@ -357,9 +357,6 @@ exports.getTicketStats = async (artistId) => {
   }));
 };
 
-
-// src/services/resService.js
-
 /**
  * [추가] 티켓 코드로 예약 상태 조회
  * 폴링 API에서 현재 예약의 상태(PENDING, CONFIRMED 등)를 확인하기 위해 사용
@@ -379,4 +376,47 @@ exports.checkStatus = async (ticketCode) => {
         console.error("[resService.checkStatus] Error:", error);
         throw error;
     }
+};
+
+// [어드민 환불내역 조회]
+// resService.js
+exports.getPendingRefunds = async () => {
+    // 1. DB에서 조인해서 데이터 가져오기
+    const refunds = await resRepository.findPendingRefunds();
+
+    // 2. 🌟 프론트엔드 AdminRefund.jsx가 사용하는 이름으로 매핑 (Mapping)
+    return refunds.map(item => ({
+        refundId: item.refund_id,
+        // reservations 테이블의 ticket_code를 targetId로 변환
+        targetId: item.reservations.ticket_code, 
+        // BigInt는 브라우저에서 에러 날 수 있으니 문자열로 변환
+        memberId: item.member_id.toString(),    
+        // refund_amount를 totalPrice로 변환
+        totalPrice: item.refund_amount,         
+        // 조인된 events 테이블의 title을 title로 변환
+        title: item.reservations.events.title,  
+        // refund_reason을 reason으로 변환
+        reason: item.refund_reason,             
+        status: item.status,
+        createdAt: item.created_at
+    }));
+};
+
+exports.getCompletedRefunds = async () => {
+    const reservations = await resRepository.findCompletedRefunds();
+
+    return reservations.map(item => {
+        const refund = item.reservation_refunds[0]; // 가장 최근 환불 레코드
+        return {
+            refundId:    refund?.refund_id || null,
+            targetId:    item.ticket_code,           // ✅ reservations에서 직접
+            memberId:    item.member_id.toString(),  // ✅ reservations에서 직접
+            totalPrice:  refund?.refund_amount || item.total_price,
+            title:       item.events.title,          // ✅ events에서 직접
+            reason:      refund?.refund_reason || null,
+            status:      item.status,
+            processedAt: refund?.processed_at || null,
+            createdAt:   item.booked_at
+        };
+    });
 };

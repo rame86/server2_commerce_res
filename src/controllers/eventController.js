@@ -27,21 +27,36 @@ exports.getAllEvents = async (req, res) => {
 // [2] 아티스트용: 내 공연 목록 조회
 exports.getMyEvents = async (req, res) => {
     try {
-        const { artistId } = req.query;
-        if (!artistId) return res.status(400).json({ message: "artistId 누락" });
-
-        const events = await eventRepository.findArtistEvents(artistId); // 레포지토리 이름 유지
+        // 🌟 헤더 대신 쿼리에서 바로 artistId 추출!
+        const artistId = req.query.artistId;
         
-        // 🚨 여기서도 serializeBigInt 사용!
+        if (!artistId) return res.status(400).json({ message: "artistId가 없습니다." });
+
+        const events = await eventRepository.findArtistEvents(artistId);
+        
+        const formattedEvents = events.map(event => {
+            // 🌟 selected_seats가 "A1, A2" 문자열일 테니까 배열로 쪼개기
+            const reservedSeats = (event.reservations || []).flatMap(res => {
+                if (typeof res.selected_seats === 'string') {
+                    return res.selected_seats.split(',').map(s => s.trim());
+                }
+                return res.selected_seats || [];
+            });
+
+            return {
+                ...event,
+                reservedSeats: reservedSeats // 프론트 좌석표에서 쓸 데이터
+            };
+        });
+
         res.status(200).json({ 
-            events: serializeBigInt(events) 
+            events: serializeBigInt(formattedEvents) 
         });
     } catch (err) {
-        console.error("❌ 아티스트 이벤트 조회 오류:", err);
-        res.status(500).json({ message: "내 공연 로드 실패" });
+        console.error("❌ 조회 오류:", err.message);
+        res.status(500).json({ message: "서버 오류 발생" });
     }
 };
-
 /**
  * 🌟 BigInt 변환 유틸 (절대 삭제 금지)
  * JSON.stringify가 처리 못하는 BigInt를 문자열로 바꿔줌
@@ -195,7 +210,7 @@ const formatToSpring = (dateInput) => {
  */
 exports.requestEventApproval = async (req, res) => {
     // 1. 데이터 추출 (신규 필드 추가: age_limit, running_time, is_standing, seat_map_config)
-    const { 
+    let { 
         requester_id, member_id, 
         title, total_capacity, price, description, venue, address, 
         event_date, open_time, close_time, 
@@ -205,6 +220,17 @@ exports.requestEventApproval = async (req, res) => {
     } = req.body;
 
     try {
+        console.log("--- 🚀 컨트롤러 요청 도착 ---");
+
+        // 🌟 [핵심 추가] Multer로 업로드된 실제 파일이 있다면 images 배열 맨 앞에 추가!
+        if (req.file) {
+            const uploadedFilename = req.file.filename;
+            if (!images) images = [];
+            if (!Array.isArray(images)) images = [images]; // 문자열로 왔을 경우 대비
+            // 실제 파일을 포스터(1순위)로 쓰기 위해 맨 앞에 넣음
+            images.unshift(uploadedFilename); 
+        }
+
         const finalRequesterId = requester_id || member_id;
         const finalArtistId = artist_id || finalRequesterId;
 
@@ -217,24 +243,21 @@ exports.requestEventApproval = async (req, res) => {
 
         /**
          * 🌟 [신규 로직] 수수료 및 정산 정책 자동 계산
-         * 공연장 이름(venue)을 확인해서 자체 공연장이면 20% 고정, 아니면 좌석 수(capacity)에 따라 차등 적용
          */
-        const parsedCapacity = parseInt(total_capacity, 10);
+        const parsedCapacity = parseInt(total_capacity, 10) || 0;
         let appliedPolicy;
         
         if (INTERNAL_VENUES.includes(venue)) {
-            // 자체 공연장(루미나50, 100, 200)이면 무조건 20% 적용
-            appliedPolicy = INTERNAL_VENUE_POLICY; // 자체 공연장(C)
+            appliedPolicy = INTERNAL_VENUE_POLICY; 
         } else {
-            // 외부 공연장이면 규모(좌석 수)에 따라 정책 매칭 (찾지 못하면 기본 소규모 적용)
             appliedPolicy = SCALE_POLICIES.find(p => parsedCapacity >= p.min) || SCALE_POLICIES[2];
         }
 
         // 관리자 확인용 스냅샷 (신규 필드 포함)
         const eventSnapshot = {
             title, artist_id, artist_name, event_type, description,
-            price: parseInt(price, 10),
-            total_capacity: parseInt(total_capacity, 10),
+            price: parseInt(price, 10) || 0,
+            total_capacity: parsedCapacity,
             venue, address, event_date, open_time, close_time,
             age_limit: parseInt(age_limit, 10) || 0,
             running_time: parseInt(running_time, 10) || 0,
@@ -247,23 +270,22 @@ exports.requestEventApproval = async (req, res) => {
 
         /**
          * 2. [핵심 로직] 트랜잭션 처리
-         * 이벤트 -> 위치 -> 이미지 -> 승인요청 순서로 저장 (원자성 보장)
          */
         const { newEvent, approvalReq } = await prisma.$transaction(async (tx) => {
             // (1) 공연 기본 정보 생성 (신규 필드 포함)
             const createdEvent = await tx.events.create({
                 data: {
-                    title, 
+                    title: title || "제목 없음", 
                     artist_id: BigInt(finalArtistId),
-                    artist_name, 
-                    event_type, 
-                    description,
-                    price: parseInt(price, 10),
-                    total_capacity: parseInt(total_capacity, 10),
-                    available_seats: parseInt(total_capacity, 10),
-                    event_date: new Date(event_date),
-                    open_time: new Date(open_time),
-                    close_time: new Date(close_time),
+                    artist_name: artist_name || "Unknown Artist", 
+                    event_type: event_type || "CONCERT", 
+                    description: description || "",
+                    price: parseInt(price, 10) || 0,
+                    total_capacity: parsedCapacity,
+                    available_seats: parsedCapacity,
+                    event_date: event_date ? new Date(event_date) : new Date(),
+                    open_time: open_time ? new Date(open_time) : new Date(),
+                    close_time: close_time ? new Date(close_time) : new Date(),
                     age_limit: parseInt(age_limit, 10) || 0,
                     running_time: parseInt(running_time, 10) || 0,
                     is_standing: is_standing === true || is_standing === 'true',
@@ -276,7 +298,7 @@ exports.requestEventApproval = async (req, res) => {
             await tx.event_locations.create({
                 data: {
                     event_id: createdEvent.event_id,
-                    venue, address, latitude: lat, longitude: lng
+                    venue: venue || "장소 미정", address: address || "", latitude: lat, longitude: lng
                 }
             });
 
@@ -286,7 +308,7 @@ exports.requestEventApproval = async (req, res) => {
                     data: images.map((url, index) => ({
                         event_id: createdEvent.event_id,
                         image_url: url,
-                        image_role: index === 0 ? 'POSTER' : 'DETAIL', // 첫 번째는 포스터, 나머지는 상세
+                        image_role: index === 0 ? 'POSTER' : 'DETAIL', // 첫 번째는 포스터
                         sort_order: index
                     }))
                 });
@@ -298,7 +320,7 @@ exports.requestEventApproval = async (req, res) => {
                     event_id: createdEvent.event_id,
                     requester_id: BigInt(finalRequesterId),
                     status: 'PENDING',
-                    event_snapshot: eventSnapshot
+                    event_snapshot: eventSnapshot // 🌟 스키마 필수 조건 만족!
                 }
             });
 
@@ -318,31 +340,37 @@ exports.requestEventApproval = async (req, res) => {
             status: 'PENDING',
             eventTitle: title,
             rejectionReason: null,
-            createdAt: formatToSpring(approvalReq.created_at),
-            eventStartDate: formatToSpring(event_date),
+            createdAt: formatToSpring(approvalReq.created_at || new Date()),
+            eventStartDate: formatToSpring(event_date || new Date()),
             location: venue,
-            price: Number(price),
-            totalCapacity: parseInt(total_capacity, 10) || 0,
+            price: Number(price) || 0,
             ageLimit: parseInt(age_limit, 10) || 0,
             runningTime: parseInt(running_time, 10) || 0,
             isStanding: is_standing === true || is_standing === 'true',
-            // 🌟 이 정보를 Java로 쏴줘야, 나중에 승인될 때 이 값을 다시 받아와서 DB에 저장할 수 있음!
             salesCommissionRate: appliedPolicy.rate,
             settlementType: appliedPolicy.type,
-            scaleGroup: appliedPolicy.group.substring(0, 1), // 문자열 1자리만 넘기기 (L, M, S, C)
-            // 🌟 [추가] 관리자 페이지에서 바로 이미지를 볼 수 있게 URL 전달
-            // 이미지 배열이 있다면 첫 번째 이미지(포스터)를 보내줌
-            imageUrl: (images && images.length > 0) ? images[0] : null
+            scaleGroup: appliedPolicy.group.substring(0, 1), 
+            // 핵심: Nginx가 /images/res/ 경로를 감시하므로 URL도 그에 맞춰 생성
+            imageUrl: (images && images.length > 0) 
+                ? (images[0].startsWith('http') 
+                    ? images[0] 
+                    : `/images/res/${images[0]}`) // 👈 앞에 도메인 싹 빼고 상대 경로만!
+                : null,
+            // 🌟 2. [추가] 예매 오픈/종료 시간 & 총 좌석 수 
+            bookingStartDate: formatToSpring(open_time || new Date()), // 예매 시작
+            bookingEndDate: formatToSpring(close_time || new Date()),  // 예매 종료
+            totalCapacity: parsedCapacity                              // 좌석표 계산용
         };
 
-        // RabbitMQ 전송 (라우팅 키: admin.event.request)
+        // RabbitMQ 전송
         await mq.publishToQueue(mq.ROUTING_KEYS.EVENT_REQ_ADMIN, eventResultDTO);
 
         console.log(`📤 [관리자 전송] ID: ${eventResultDTO.approvalId}, 제목: ${eventResultDTO.eventTitle}`);
         
-        res.status(202).json({ 
+        res.status(201).json({ 
             message: "신청 완료 및 이미지 등록 성공", 
-            approvalId: eventResultDTO.approvalId 
+            approvalId: eventResultDTO.approvalId,
+            imageUrl: eventResultDTO.imageUrl
         });
 
     } catch (error) {
@@ -431,47 +459,21 @@ exports.getEventDetail = async (req, res) => {
     }
 };
 
-//유저 대시보드 이벤트 큐 발송
+// 유저 대시보드 이벤트 큐 발송
 // 유저 대시보드 진입 시 전체 이벤트 및 개인 예매 내역 큐 발송
 exports.sendDashboardQueues = async (req, res) => {
     try {
-        // [1] 전체 이벤트 목록 조회 (기존 레포지토리 재사용)
         const events = await eventRepository.findAllEvents();
 
-        // 큐 전송 1: 전체 이벤트 내역
-        await mq.publishToQueue('all_events_queue', {  // 👈 mq 로 변경!
+        // 🌟 mq.js에 새로 정의한 ROUTING_KEYS.DASHBOARD_ALL 사용
+        await mq.publishToQueue(mq.ROUTING_KEYS.DASHBOARD_ALL, { 
             type: 'ALL_EVENTS_LIST',
             data: serializeBigInt(events),
             timestamp: new Date()
         });
 
-        // [2] 로그인 유저의 예매 내역 조회
-        const userId = req.user?.id; 
-
-        if (userId) {
-            // 레포지토리 함수 호출하여 확정된 내역만 가져옴
-            const userReservations = await eventRepository.findConfirmedReservationsByUserId(userId);
-
-            // 큐 전송 2: 특정 회원의 예매 내역
-            await mq.publishToQueue('user_reservation_queue', { 
-                type: 'MY_RESERVATIONS',
-                userId: userId.toString(),
-                data: serializeBigInt(userReservations),
-                count: userReservations.length
-            });
-            
-            console.log(`✅ 유저(${userId}) 예매 데이터 큐 전송 완료`);
-        }
-
-        console.log("✅ 전체 이벤트 목록 큐 전송 완료");
-
-        res.status(200).json({ 
-            success: true, 
-            message: "대시보드 데이터 큐 전송 성공" 
-        });
-
+        res.status(200).json({ success: true });
     } catch (err) {
-        console.error("❌ 대시보드 데이터 처리 중 오류:", err);
-        res.status(500).json({ message: "데이터 처리 실패" });
+        res.status(500).json({ message: "실패" });
     }
 };

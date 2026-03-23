@@ -224,3 +224,36 @@ exports.getStatusByTicketCode = async (ticketCode) => {
         select: { status: true } // 🌟 성능 최적화: 상태값만 쏙 뽑아옴
     });
 };
+
+// [Repository] 환불 대기 목록 조회
+exports.findPendingRefunds = async () => {
+    return await prisma.reservation_refunds.findMany({
+        where: { status: 'PENDING' },
+        include: {
+            reservations: {
+                include: {
+                    events: true // 이벤트 제목(title)까지 가져오기
+                }
+            }
+        },
+        orderBy: { created_at: 'desc' }
+    });
+};
+
+
+// [어드민 환불완료 전체 조회]
+exports.findCompletedRefunds = async () => {
+    const prisma = require('../config/prisma');
+    // ✅ reservations 기준으로 REFUNDED 조회
+    return await prisma.reservations.findMany({
+        where: { status: 'REFUNDED' },
+        include: {
+            events: true,
+            reservation_refunds: {   // ✅ 환불 사유/처리일 가져오기
+                orderBy: { processed_at: 'desc' },
+                take: 1
+            }
+        },
+        orderBy: { updated_at: 'desc' }
+    });
+};

@@ -34,16 +34,19 @@ async function startRefundResponseConsumer() {
 
             // 관리자가 targetId에 티켓 코드를 실어 보낸 상황
             const ticketCode = response.targetId || response.ticket_code;
-            const status = (response.status === 'REFUND_SUCCESS' || response.status === 'CONFIRMED') ? 'CONFIRMED' : response.status;
+            const status = (response.status === 'APPROVED' || response.status === 'CONFIRMED') 
+                ? 'CONFIRMED' : response.status;  // APPROVED 추가
+            const rejectionReason = response.reason || response.rejectionReason || null;  // reason 추가
 
             try {
                 if (!ticketCode) {
                     throw new Error("관리자 응답에 ticketCode(targetId)가 누락되었습니다.");
                 }
 
-                // 💡 수정 핵심: refund_id 대신 연결된 reservations의 ticket_code로 찾기
+                // ✅ 수정 - PENDING인 것만 정확히 잡음
                 const refundRecord = await prisma.reservation_refunds.findFirst({
                     where: {
+                        status: 'PENDING',       // ✅ 이 조건 추가
                         reservations: {
                             ticket_code: ticketCode
                         }
@@ -78,23 +81,23 @@ async function startRefundResponseConsumer() {
                             { persistent: true, contentType: 'application/json' }
                         );
                     });
-                    console.log(`🚀 [Payment Relay] RefundID ${refundId} 승인 -> 결제 취소 큐 발송 완료`);
+                   console.log(`🚀 [Payment Relay] RefundID ${realRefundId} 승인 -> 결제 취소 큐 발송 완료`);
 
                 } else if (status === 'REJECTED' || status === 'FAILED') {
                     // ❌ [거절 시] 반려 처리 및 예매 상태 원복
                     await prisma.$transaction(async (tx) => {
                         await tx.reservation_refunds.update({
-                            where: { refund_id: Number(refundId) },
+                            where: { refund_id: realRefundId },
                             data: { status: 'REJECTED', rejection_reason: rejectionReason, processed_at: new Date() }
                         });
 
                         // 예매 상태를 다시 CONFIRMED로 돌려서 티켓을 쓸 수 있게 함
                         await tx.reservations.update({
                             where: { reservation_id: refundRecord.reservation_id },
-                            data: { status: 'CONFIRMED' }
+                            data: { status: 'REFUND_REJECTED' }
                         });
                     });
-                    console.log(`🚫 [Refund Rejected] RefundID ${realRefundId} 거절 및 티켓 원복 완료`);
+                    console.log(`🚀 [Payment Relay] RefundID ${realRefundId} 승인 -> 결제 취소 큐 발송 완료`);
                 }
 
                 channel.ack(msg); // 메시지 처리 완료
