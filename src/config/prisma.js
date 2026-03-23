@@ -2,7 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 
 /**
  * [Prisma 싱글톤 설정]
- * global 객체를 활용해 커넥션 풀이 넘치는 것을 방지함
+ * global 객체를 활용해 커넥션 풀이 넘치는 것을 방지함  
  */
 let prisma;
 
