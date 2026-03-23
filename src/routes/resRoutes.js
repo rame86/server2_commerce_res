@@ -64,6 +64,12 @@ router.get('/reservations/status/:ticketCode', resController.getReservationStatu
 // [POST] 사용자 직접 환불 요청
 router.post('/refund', resController.requestRefund);
 
+// [POST] 사용자 직접 환불 요청
+router.post('/refundList', resController.refundList);
+
+// [POST] 어드민 환불 완료 내역 조회
+router.post('/refundCompletedList', resController.refundCompletedList);
+
 // [GET] 특정 유저의 전체 예약 내역 조회 
 // 경로: /msa/res/member/:memberId
 router.get('/member/:memberId', resController.getMyReservations);

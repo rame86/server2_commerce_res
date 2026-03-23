@@ -204,3 +204,28 @@ exports.getRecentTicketStats = async (req, res) => {
         return res.status(500).json({success: false, message: '통계 조회 실패'});
     }
 };
+
+// [어드민 환불내역 조회]
+exports.refundList = async (req, res) => {
+    try {
+        const data = await resService.getPendingRefunds();
+        res.status(200).json({
+            success: true,
+            data: data 
+        });
+    } catch (error) {
+        console.error("Refund List Error:", error);
+        res.status(500).json({ success: false, message: "내역 조회 실패" });
+    }
+};
+
+// [어드민 환불 완료 내역 조회]
+exports.refundCompletedList = async (req, res) => {
+    try {
+        const data = await resService.getCompletedRefunds();
+        res.status(200).json({ success: true, data });
+    } catch (error) {
+        console.error("Refund Completed List Error:", error);
+        res.status(500).json({ success: false, message: "완료 내역 조회 실패" });
+    }
+};
