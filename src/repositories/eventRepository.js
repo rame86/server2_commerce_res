@@ -5,9 +5,7 @@
 
 const prisma = require('../config/prisma');
 
-/**
- * [Redis Warm-up용 DB 재고 조회]
- */
+// [1] Redis Warm-up용 DB 재고 조회
 exports.getEventStock = async (eventId) => {
     try {
         const targetEvent = await prisma.events.findUnique({
@@ -21,9 +19,7 @@ exports.getEventStock = async (eventId) => {
     }
 };
 
-/**
- * [특정 공연 조회]
- */
+// [2] 특정 공연 조회 (승인된 것만)
 exports.findEventById = async (eventId) => {
     return await prisma.events.findUnique({
         where: { 
@@ -33,11 +29,7 @@ exports.findEventById = async (eventId) => {
     });
 };
 
-// [src/repositories/eventRepository.js]
-
-/**
- * [유저용] 승인된 모든 공연 목록 조회
- */
+// [3] 승인된 모든 공연 목록 조회 (유저용)
 exports.findAllEvents = async () => {
     return await prisma.events.findMany({ 
         where: { approval_status: 'CONFIRMED' }, // 무조건 승인된 것만
@@ -53,94 +45,79 @@ exports.findAllEvents = async () => {
     });
 };
 
-/**
- * [유저용] 승인된 모든 공연 목록 조회
- */
-exports.findAllEvents = async () => {
-    return await prisma.events.findMany({ 
-        where: { approval_status: 'CONFIRMED' }, // 무조건 승인된 것만
-        include: {
-            event_locations: true,
-            event_images: true,
-            reservations: {
-                where: { status: 'CONFIRMED' },
-                select: { ticket_count: true }
-            }
-        },
-        orderBy: { event_date: 'asc' }
-    });
-};
-
-/**
- * [아티스트용] 본인이 신청한 모든 공연 조회 (상태 상관없음)
- */
+// [4] 아티스트 본인 공연 조회 (상태 상관없음)
 exports.findArtistEvents = async (artistId) => {
     return await prisma.events.findMany({ 
-        where: { artist_id: BigInt(artistId) }, // 내 것만
+        where: { artist_id: BigInt(artistId) },
         include: {
             event_locations: true,
             event_images: true,
             reservations: {
                 where: { status: 'CONFIRMED' },
-                select: { ticket_count: true }
+                select: { 
+                    ticket_count: true, 
+                    selected_seats: true // 🌟 실제 DB 컬럼명으로 수정!
+                }
             }
         },
-        orderBy: { created_at: 'desc' } // 최신 신청순
+        orderBy: { created_at: 'desc' }
     });
 };
 
-
-/**
- * [공연 등록 신청 - Repository] 
- * 수정 사항: 이미지(event_images) 저장 로직 추가
- */
+// [5] 🌟 새로운 공연 등록 (파일/URL 둘 다 대응)
 exports.createEventRequest = async (data) => {
     return await prisma.$transaction(async (tx) => {
-        // 1. 공연 기본 정보 생성 (PENDING 상태)
+        // BigInt 안전 변환
+        const artistId = (data.artist_id && data.artist_id !== "") ? BigInt(data.artist_id) : BigInt(0);
+        const requesterId = (data.requester_id && data.requester_id !== "") ? BigInt(data.requester_id) : artistId;
+
+        // 1. events 생성
         const newEvent = await tx.events.create({
             data: {
-                title: data.title,
+                title: data.title || "제목 없음",
+                artist_id: artistId,
+                artist_name: data.artist_name || "Unknown Artist",
+                event_type: data.event_type || "CONCERT",
                 description: data.description,
-                price: data.price,
-                total_capacity: data.total_capacity,
-                available_seats: data.total_capacity,
-                category: data.category,
+                price: parseInt(data.price, 10) || 0,
+                total_capacity: parseInt(data.total_capacity, 10) || 0,
+                available_seats: parseInt(data.total_capacity, 10) || 0,
                 event_date: new Date(data.event_date),
-                approval_status: 'PENDING',
-                member_id: (data.member_id !== undefined && data.member_id !== null) 
-                            ? BigInt(data.member_id) 
-                            : null
+                open_time: new Date(data.open_time),
+                close_time: new Date(data.close_time),
+                approval_status: 'PENDING'
             }
         });
 
-        // 2. 공연 위치 정보 저장
+        // 2. event_locations (필드명: venue)
         await tx.event_locations.create({
             data: {
                 event_id: newEvent.event_id,
-                venue_name: data.venue,
-                address: data.address,
-                latitude: data.lat,         // 🌟 lat -> latitude
-                longitude: data.lng
+                venue: data.venue || "장소 미정",
+                address: data.address || "",
+                latitude: parseFloat(data.lat) || 0,
+                longitude: parseFloat(data.lng) || 0
             }
         });
 
-        // 🌟 3. [추가] 공연 이미지 정보 저장
-        // data.images가 배열로 들어온다고 가정 (예: [{url: '...', type: 'POSTER'}, ...])
-        if (data.images && Array.isArray(data.images) && data.images.length > 0) {
-            await tx.event_images.createMany({
-                data: data.images.map(img => ({
+        // 3. event_images (image_role: POSTER)
+        if (data.image_url) {
+            await tx.event_images.create({
+                data: {
                     event_id: newEvent.event_id,
-                    image_url: img.url,
-                    image_type: img.type || 'SUB' // 메인 포스터 여부 등을 구분
-                }))
+                    image_url: data.image_url,
+                    image_role: 'POSTER'
+                }
             });
         }
 
-        // 4. 관리자 승인 대기열(event_approvals)에 등록
+        // 4. event_approvals (🌟 필수 Json 필드 snapshot 추가)
         await tx.event_approvals.create({
             data: {
                 event_id: newEvent.event_id,
-                status: 'PENDING'
+                requester_id: requesterId,
+                status: 'PENDING',
+                event_snapshot: { title: data.title, price: data.price, venue: data.venue } // 🌟 필수!
             }
         });
 
@@ -148,9 +125,7 @@ exports.createEventRequest = async (data) => {
     });
 };
 
-/**
- * [공연 승인 및 정보 반환]
- */
+// [6] 공연 승인
 exports.confirmEvent = async (tx, eventId, adminId) => {
     if (!eventId) throw new Error("eventId가 유효하지 않습니다.");
 
@@ -170,9 +145,7 @@ exports.confirmEvent = async (tx, eventId, adminId) => {
     });
 };
 
-/**
- * [공연 반려 처리]
- */
+// [7] 공연 반려
 exports.rejectEvent = async (tx, eventId, adminId, reason) => {
     if (!eventId) throw new Error("eventId가 유효하지 않습니다.");
 
@@ -182,7 +155,7 @@ exports.rejectEvent = async (tx, eventId, adminId, reason) => {
             status: 'FAILED', 
             rejection_reason: reason,
             // 💡 [방어 코드] admin_id 안전하게 처리
-            admin_id: (adminId !== undefined && admin_id !== null) ? BigInt(adminId) : null,
+            admin_id: (adminId !== undefined && adminId !== null) ? BigInt(adminId) : null,
             processed_at: new Date()
         }
     });
@@ -193,16 +166,14 @@ exports.rejectEvent = async (tx, eventId, adminId, reason) => {
     });
 };
 
-/**
- * [정산 정책 조회]
- */
+// [8] 정산 정책 조회
 exports.getFeePolicy = async (eventId) => {
     return await prisma.event_fee_policies.findUnique({
         where: { event_id: parseInt(eventId, 10) }
     });
 };
 
-//유저 대시보드 이벤트 [내 예매 내역 조회]
+// [9] 유저 대시보드 [내 예매 내역 조회]
 exports.findConfirmedReservationsByUserId = async (userId) => {
     return await prisma.reservations.findMany({
         where: {

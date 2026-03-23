@@ -61,12 +61,18 @@ jobs:
           key: ${{ secrets.GCP_KEY }}
           script: |
             WORK_DIR="/home/${{ secrets.GCP_USER }}/reservation"
+            # 🌟 [추가됨] 이미지 저장용 외부 호스트 디렉토리 생성 및 권한 설정
+          
+            IMAGE_DIR="/home/${{ secrets.GCP_USER }}/images/res"
             mkdir -p $WORK_DIR
+            mkdir -p $IMAGE_DIR
+            chmod -R 777 $IMAGE_DIR
+
             cd $WORK_DIR
             
             # 네트워크 사전 구성
             docker network inspect msa-network >/dev/null 2>&1 || docker network create msa-network
-            
+
             # .env 파일 완벽 동적 생성
             cat <<EOF > .env
             DATABASE_URL="postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.GCP_SERVER_1 }}:5432/msa_res_db?schema=res"
@@ -93,6 +99,9 @@ jobs:
                 ports:
                   - "8082:8082"
                 env_file: .env
+                # 🌟 [핵심] 외부 볼륨 마운트 설정 추가!
+                volumes:
+                  - $IMAGE_DIR:/app/public/images/res
                 networks:
                   - msa-network
 
