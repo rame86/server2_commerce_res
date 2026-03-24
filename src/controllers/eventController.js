@@ -453,3 +453,81 @@ exports.sendDashboardQueues = async (req, res) => {
         res.status(500).json({ message: "실패" });
     }
 };
+
+// ── 위시리스트 추가 ──────────────────────────
+exports.addWishlist = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { memberId } = req.body;
+
+        if (!memberId) return res.status(400).json({ message: 'memberId가 없습니다.' });
+
+        // 중복 체크
+        const existing = await prisma.event_wishlists.findFirst({
+            where: {
+                event_id: parseInt(eventId),
+                member_id: BigInt(memberId)
+            }
+        });
+
+        if (existing) return res.status(200).json({ message: '이미 찜한 공연입니다.', isWishlisted: true });
+
+        await prisma.event_wishlists.create({
+            data: {
+                event_id: parseInt(eventId),
+                member_id: BigInt(memberId)
+            }
+        });
+
+        res.status(201).json({ message: '찜 추가 완료', isWishlisted: true });
+    } catch (error) {
+        console.error('❌ 위시리스트 추가 오류:', error);
+        res.status(500).json({ message: '서버 오류' });
+    }
+};
+
+// ── 위시리스트 삭제 ──────────────────────────
+exports.removeWishlist = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { memberId } = req.body;
+
+        if (!memberId) return res.status(400).json({ message: 'memberId가 없습니다.' });
+
+        await prisma.event_wishlists.deleteMany({
+            where: {
+                event_id: parseInt(eventId),
+                member_id: BigInt(memberId)
+            }
+        });
+
+        res.status(200).json({ message: '찜 삭제 완료', isWishlisted: false });
+    } catch (error) {
+        console.error('❌ 위시리스트 삭제 오류:', error);
+        res.status(500).json({ message: '서버 오류' });
+    }
+};
+
+// ── 내 위시리스트 목록 조회 ──────────────────
+exports.getMyWishlist = async (req, res) => {
+    try {
+        const { memberId } = req.query;
+
+        if (!memberId) return res.status(400).json({ message: 'memberId가 없습니다.' });
+
+        const wishlists = await prisma.event_wishlists.findMany({
+            where: { member_id: BigInt(memberId) },
+            include: {
+                events: {
+                    include: { event_locations: true, event_images: true }
+                }
+            },
+            orderBy: { created_at: 'desc' }
+        });
+
+        res.status(200).json(serializeBigInt(wishlists));
+    } catch (error) {
+        console.error('❌ 위시리스트 조회 오류:', error);
+        res.status(500).json({ message: '서버 오류' });
+    }
+};

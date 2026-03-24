@@ -44,6 +44,11 @@ router.get('/events/my', eventController.getMyEvents);
 // 예: http://localhost:8082/events/:eventId
 router.get('/events/:eventId', eventController.getEventDetail); // 👈 eventController로 변경
 
+// ✅ 위시리스트 (여기에 추가)
+router.get('/wishlist', eventController.getMyWishlist);
+router.post('/events/:eventId/wishlist', eventController.addWishlist);
+router.delete('/events/:eventId/wishlist', eventController.removeWishlist);
+
 // [POST] 유저대시보드 
 router.post('/dashboard/dashboard-queue', eventController.sendDashboardQueues);
 // [GET]📍 공연 정보/지도 관련
