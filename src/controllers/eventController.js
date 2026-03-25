@@ -371,7 +371,7 @@ exports.requestEventApproval = async (req, res) => {
             eventTitle: title,
             rejectionReason: null,
             createdAt: formatToSpring(approvalReq.created_at || new Date()),
-            eventStartDate: formatToSpring(event_date || new Date()),
+            eventDate: formatToSpring(event_date || new Date()),
             location: venue,
             price: Number(price) || 0,
             ageLimit: parseInt(age_limit, 10) || 0,
@@ -387,8 +387,8 @@ exports.requestEventApproval = async (req, res) => {
                     : `/images/res/${images[0]}`) // 👈 앞에 도메인 싹 빼고 상대 경로만!
                 : null,
             // 🌟 2. [추가] 예매 오픈/종료 시간 & 총 좌석 수 
-            bookingStartDate: formatToSpring(open_time || new Date()), // 예매 시작
-            bookingEndDate: formatToSpring(close_time || new Date()),  // 예매 종료
+            eventStartDate: formatToSpring(open_time || new Date()), // 예매 시작
+            eventEndDate: formatToSpring(close_time || new Date()),  // 예매 종료
             totalCapacity: parsedCapacity                              // 좌석표 계산용
         };
 

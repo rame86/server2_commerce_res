@@ -52,6 +52,12 @@ exports.findArtistEvents = async (artistId) => {
         include: {
             event_locations: true,
             event_images: true,
+            // 🌟 반려 사유를 가져오기 위해 이 부분을 추가해!
+            event_approvals_events_approval_idToevent_approvals: {
+                select: {
+                    rejection_reason: true
+                }
+            },
             reservations: {
                 where: { status: 'CONFIRMED' },
                 select: { 
