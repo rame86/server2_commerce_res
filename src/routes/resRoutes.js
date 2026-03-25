@@ -51,6 +51,7 @@ router.delete('/events/:eventId/wishlist', eventController.removeWishlist);
 
 // [POST] 유저대시보드 
 router.post('/dashboard/dashboard-queue', eventController.sendDashboardQueues);
+
 // [GET]📍 공연 정보/지도 관련
 router.get('/events/:eventId/location', eventController.getEventLocation);
 
@@ -87,6 +88,9 @@ router.get('/events/:eventId/reservations', resController.getEventReservations);
 
 // [GET] 아티스트 계정에서 조회되는 본인 이벤트 최근 5일 예매조회
 router.get('/artistreserve/:memberId', resController.getRecentTicketStats);
+
+// [GET] 유저 확정 예매 건수만 조회
+router.get('/dashboard/reservation-count', resController.getConfirmedReservationCount);
 
 
 
