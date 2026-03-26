@@ -135,7 +135,7 @@ exports.initEventStock = async (eventId, stockCount) => {
 };
 
 /**
- * [관리자 응답 처리 서비스 - 1번 과제 최종 반영]
+ * [관리자 응답 처리 서비스] 이벤트 등록에 대한 응답 처리
  * -------------------------------------------------------------------------
  * 역할: 관리자의 승인/거절 신호를 처리하고, 승인 시 스냅샷 데이터 확정 및 정책 생성
  * 해결: Java(Long) -> Node(BigInt) 에러 방어 및 신규 필드 업데이트 추가
@@ -147,7 +147,7 @@ exports.processAdminResponse = async (response) => {
     // 1. 관리자가 보낸 건 '공연 ID'임 (예: 5)
     const incomingEventId = response.eventId || response.adminEventId; 
     const admin_id = response.admin_id || response.adminId; 
-    const { status, rejectionReason } = response;
+    const { status, rejectionReason, artistName, eventStartDate, eventEndDate } = response;
 
     if (!incomingEventId) throw new Error("공연 ID(eventId)가 전달되지 않았음");
 
@@ -184,6 +184,11 @@ exports.processAdminResponse = async (response) => {
                 data: {
                     approval_status: 'CONFIRMED',
                     approval_id: realApprovalId, // 외래키로 연결
+                    // 핵심 주석: 관리자 DTO의 eventStartDate(예매시작) -> 내 DB의 open_time에 저장
+                    open_time: eventStartDate ? new Date(eventStartDate) : snapshot.open_time, 
+                    // 핵심 주석: 관리자 DTO의 eventEndDate(예매종료) -> 내 DB의 close_time에 저장
+                    close_time: eventEndDate ? new Date(eventEndDate) : snapshot.close_time,
+                    artist_name: artistName || snapshot.artist_name,
                     age_limit: snapshot.age_limit || 0,
                     running_time: snapshot.running_time || 0,
                     is_standing: snapshot.is_standing || false,

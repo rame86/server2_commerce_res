@@ -296,3 +296,14 @@ exports.createRefundAdminRequest = async (reservationId, memberId, refundAmount,
         return newRefund;
     });
 };
+
+// 유저 대시보드용 [확정 예매 건수 조회]
+exports.countConfirmedReservationsByUserId = async (userId) => {
+    // Prisma의 count 메서드를 사용하여 조건에 맞는 레코드 개수만 반환
+    return await prisma.reservations.count({
+        where: {
+            member_id: BigInt(userId),
+            status: 'CONFIRMED'
+        }
+    });
+};

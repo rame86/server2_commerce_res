@@ -4,6 +4,7 @@ const resService = require('../services/resService');
 const redis = require('../config/redisClient'); 
 const { publishToQueue, ROUTING_KEYS } = require('../config/rabbitMQ');
 const prisma = require('../config/prisma');
+const resRepository = require('../repositories/resRepository');
 
 // =========================================================================
 // [1] 예매 생성 (🚀 예약 도메인의 핵심 로직)
@@ -258,5 +259,28 @@ exports.refundCompletedList = async (req, res) => {
     } catch (error) {
         console.error("Refund Completed List Error:", error);
         res.status(500).json({ success: false, message: "완료 내역 조회 실패" });
+    }
+};
+
+// [유저대시보드] 확정 예매 건수 조회 (getConfirmedReservationCount)
+exports.getConfirmedReservationCount = async (req, res) => {
+    try {
+        // 인증 미들웨어에서 설정된 memberId 사용 (예시)
+        const userId = req.query.userId || req.memberId;
+
+        if (!userId) {
+            return res.status(400).json({ message: "유저 정보가 필요해." });
+        }
+
+        // 서비스/레포지토리에서 개수 조회
+        const count = await resRepository.countConfirmedReservationsByUserId(userId);
+
+        res.status(200).json({
+            success: true,
+            count: count // 예매 건수 숫자만 반환
+        });
+    } catch (err) {
+        console.error("예매 건수 조회 실패:", err);
+        res.status(500).json({ message: "서버 오류 발생" });
     }
 };
