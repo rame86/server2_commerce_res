@@ -92,6 +92,8 @@ router.get('/artistreserve/:memberId', resController.getRecentTicketStats);
 // [GET] 유저 확정 예매 건수만 조회
 router.get('/dashboard/reservation-count', resController.getConfirmedReservationCount);
 
+// [GET] [관리자 이벤트] 예매가 완료된 좌석 내역 
+router.get('/reserveSeat/:eventId', resController.getEventReservedSeats);
 
 
 // [GET] test
