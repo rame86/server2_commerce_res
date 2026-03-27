@@ -534,7 +534,7 @@ exports.getMyWishlist = async (req, res) => {
 
 
 // [GET] 모든 이벤트 목록 조회
-exports.getAllEvents = async (req, res) => {
+exports.getEventsList = async (req, res) => {
   try {
     // 1. Prisma를 사용해 이벤트 데이터 전체 조회
     const events = await prisma.events.findMany({
