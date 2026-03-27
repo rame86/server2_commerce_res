@@ -531,3 +531,42 @@ exports.getMyWishlist = async (req, res) => {
         res.status(500).json({ message: '서버 오류' });
     }
 };
+
+
+// [GET] 모든 이벤트 목록 조회
+exports.getAllEvents = async (req, res) => {
+  try {
+    // 1. Prisma를 사용해 이벤트 데이터 전체 조회
+    const events = await prisma.events.findMany({
+      // 성능 최적화를 위해 프론트엔드 통계에 필요한 핵심 컬럼만 선택 (Select)
+      select: {
+        event_id: true,
+        title: true,
+        artist_id: true,
+        approval_status: true,
+        event_date: true,
+      }
+    });
+
+    // 2. BigInt 직렬화 및 프론트엔드 변수명 매핑
+    // 핵심 주석: Prisma의 BigInt는 JSON.stringify 시 에러가 발생하므로 toString()으로 변환 필수.
+    // 프론트엔드(e.artistId)에서 쉽게 비교할 수 있도록 변수명을 카멜케이스로 하나 더 매핑해서 전달함.
+    const serializedEvents = events.map((event) => {
+      const artistIdStr = event.artist_id ? event.artist_id.toString() : null;
+      
+      return {
+        ...event,
+        artist_id: artistIdStr,
+        artistId: artistIdStr, // 프론트엔드의 e.artistId === artist.memberId 조건 매칭용
+      };
+    });
+
+    // 3. 데이터 응답
+    // 프론트엔드 코드의 eventsRes.data.events 에 맞춰서 객체 형태로 감싸서 응답
+    return res.status(200).json({ events: serializedEvents });
+
+  } catch (error) {
+    console.error('[getAllEvents] 이벤트 전체 목록 조회 실패:', error);
+    return res.status(500).json({ message: '이벤트 목록을 가져오는 중 서버 오류가 발생했습니다.' });
+  }
+};
