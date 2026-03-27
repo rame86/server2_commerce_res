@@ -44,6 +44,9 @@ router.get('/events/my', eventController.getMyEvents);
 // 예: http://localhost:8082/events/:eventId
 router.get('/events/:eventId', eventController.getEventDetail); // 👈 eventController로 변경
 
+// [GET] 유저아티스트페이지 이벤트 카운트
+router.get('/events/allEvents', eventController.getAllEvents);
+
 // ✅ 위시리스트 (여기에 추가)
 router.get('/wishlist', eventController.getMyWishlist);
 router.post('/events/:eventId/wishlist', eventController.addWishlist);
