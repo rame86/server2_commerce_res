@@ -98,6 +98,9 @@ router.get('/dashboard/reservation-count', resController.getConfirmedReservation
 // [GET] [관리자 이벤트] 예매가 완료된 좌석 내역 
 router.get('/reserveSeat/:eventId', resController.getEventReservedSeats);
 
+// [GET] [아티스트 이벤트]  최근 5일 예매(티켓 구매량) 추이
+router.get('/my/daily-sales', resController.getDailySalesTrend);
+
 
 // [GET] test
 router.get('/test', testController.handleTestRequest);
