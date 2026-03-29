@@ -185,9 +185,9 @@ exports.processAdminResponse = async (response) => {
                     approval_status: 'CONFIRMED',
                     approval_id: realApprovalId, // 외래키로 연결
                     // 핵심 주석: 관리자 DTO의 eventStartDate(예매시작) -> 내 DB의 open_time에 저장
-                    open_time: eventStartDate ? new Date(eventStartDate) : snapshot.open_time, 
+                    open_time: eventStartDate ? new Date(eventStartDate) : new Date(snapshot.open_time), 
                     // 핵심 주석: 관리자 DTO의 eventEndDate(예매종료) -> 내 DB의 close_time에 저장
-                    close_time: eventEndDate ? new Date(eventEndDate) : snapshot.close_time,
+                    close_time: eventEndDate ? new Date(eventEndDate) : new Date(snapshot.close_time),
                     artist_name: artistName || snapshot.artist_name,
                     age_limit: snapshot.age_limit || 0,
                     running_time: snapshot.running_time || 0,
