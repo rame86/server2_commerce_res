@@ -448,3 +448,77 @@ exports.getCompletedRefunds = async () => {
         };
     });
 };
+
+// =========================================================================
+// [아티스트 이벤트] 
+// =========================================================================
+// [핵심] 최근 5일 예매(티켓 구매량) 추이 조회 
+exports.getDailySalesTrend = async (artistId) => {
+    try {
+        // 1. 최근 5일 날짜 뼈대 생성 (티켓이 안 팔린 0건인 날짜도 차트에 그려야 하니까)
+        const last5Days = [];
+        const today = new Date();
+
+        for (let i = 4; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(today.getDate() - i);
+            
+            // MM/DD 포맷 (예: '03/25')
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            
+            last5Days.push({
+                date: `${month}/${day}`,
+                count: 0,
+                // 검색 시작/종료 범위 세팅
+                startOfDay: new Date(d.setHours(0, 0, 0, 0)),
+                endOfDay: new Date(d.setHours(23, 59, 59, 999))
+            });
+        }
+
+        const startDate = last5Days[0].startOfDay;
+
+        // 2. DB 조회: 해당 아티스트의 이벤트에 대한 최근 5일 예매 내역 가져오기
+        const reservations = await prisma.reservations.findMany({
+            where: {
+                events: {
+                    artist_id: BigInt(artistId) // ✅ BigInt 타입 캐스팅 필수
+                },
+                booked_at: {
+                    gte: startDate // 최근 5일 시작점 이후
+                },
+                status: 'CONFIRMED' // ✅ 확정된 예매만 카운트 (DB 스키마에 맞춰 수정 가능)
+            },
+            select: {
+                booked_at: true,
+                ticket_count: true // ✅ 단순 예매 횟수가 아니라 '실제 구매한 티켓 장수' 기준
+            }
+        });
+
+        // 3. 날짜별로 티켓 구매량 합산
+        reservations.forEach(res => {
+            if (!res.booked_at) return;
+
+            const d = new Date(res.booked_at);
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const formattedDate = `${month}/${day}`;
+
+            // 뼈대 배열에서 날짜 찾아서 구매 장수(ticket_count) 더하기
+            const targetDay = last5Days.find(item => item.date === formattedDate);
+            if (targetDay) {
+                targetDay.count += res.ticket_count; 
+            }
+        });
+
+        // 4. 불필요한 Date 객체(startOfDay 등) 빼고 프론트로 보낼 알맹이만 리턴
+        return last5Days.map(item => ({
+            date: item.date,
+            count: item.count
+        }));
+
+    } catch (error) {
+        console.error("❌ 예매 추이 조회 에러:", error);
+        throw error;
+    }
+};

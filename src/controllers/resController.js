@@ -284,3 +284,83 @@ exports.getConfirmedReservationCount = async (req, res) => {
         res.status(500).json({ message: "서버 오류 발생" });
     }
 };
+
+// =========================================================================
+// [관리자 이벤트] 예매가 완료된 좌석 내역 
+// =========================================================================
+// 목적: 프론트엔드 모달에서 '루미나' 전용관 좌석표를 그릴 때, 이미 팔려서 선택 불가한 까만 좌석 배열을 반환.
+exports.getEventReservedSeats = async (req, res) => {
+    try {
+        const eventId = Number(req.params.eventId);
+
+        if (isNaN(eventId)) {
+            return res.status(400).json({ message: "유효하지 않은 이벤트 ID입니다." });
+        }
+
+        // 1. 해당 이벤트의 예매 내역 중 '취소/실패'가 아닌 것들의 좌석 배열만 쏙 빼오기
+        const reservations = await prisma.reservations.findMany({
+            where: {
+                event_id: eventId,
+                // 취소(CANCELLED), 결제실패(FAILED) 등 자리가 다시 풀려야 하는 상태 제외
+                status: { notIn: ['CANCELLED', 'CANCELED', 'FAILED', 'REFUNDED'] } 
+            },
+            select: {
+                selected_seats: true, 
+            },
+        });
+
+        // 2. Json 배열 평탄화 (Flatten)
+        // DB 리턴 형태: [ { selected_seats: ["A1", "A2"] }, { selected_seats: ["C3"] } ]
+        // flatMap 변환 후: ["A1", "A2", "C3"]
+        const reservedSeats = reservations.flatMap(r => 
+            Array.isArray(r.selected_seats) ? r.selected_seats : []
+        );
+
+        res.status(200).json({
+            success: true,
+            eventId,
+            reservedSeats // 🌟 프론트가 기다리는 바로 그 데이터!
+        });
+
+    } catch (error) {
+        console.error("❌ 좌석 조회 오류:", error);
+        res.status(500).json({ message: "좌석 조회 중 오류가 발생했습니다." });
+    }
+};
+
+// =========================================================================
+// [아티스트 이벤트] 
+// =========================================================================
+// [핵심] 최근 5일 예매(티켓 구매량) 추이 조회 컨트롤러
+exports.getDailySalesTrend = async (req, res) => {
+    try {
+        // 1. 프론트엔드에서 보낸 쿼리 파라미터(artistId) 추출
+        const { artistId } = req.query;
+
+        // 2. 값 검증 (artistId가 없으면 400 Bad Request 에러 반환)
+        if (!artistId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'artistId가 필요합니다.' 
+            });
+        }
+
+        // 3. 서비스 레이어 호출해서 데이터 가져오기
+        const trendData = await resService.getDailySalesTrend(artistId);
+
+        // 4. 성공 응답 (200 OK)
+        return res.status(200).json({
+            success: true,
+            data: trendData
+        });
+
+    } catch (error) {
+        // 5. 서버 내부 에러 처리 (500 Internal Server Error)
+        console.error("❌ 일별 예매 통계 조회 중 에러 발생:", error);
+        return res.status(500).json({ 
+            success: false, 
+            message: '서버 내부 에러가 발생했습니다.',
+            error: error.message 
+        });
+    }
+};
