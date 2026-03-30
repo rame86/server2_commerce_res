@@ -5,7 +5,11 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "nodemon src/app.js"
+    "dev": "nodemon src/app.js",
+    "/* 배포 및 자동화를 위한 스크립트 추가 */": "------------------",
+    "postinstall": "prisma generate",
+    "db:pull": "npx prisma db pull",
+    "db:gen": "npx prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
@@ -17,6 +21,7 @@
     "helmet": "^7.1.0",
     "ioredis": "^5.9.3",
     "morgan": "^1.10.0",
+    "multer": "^2.1.1",
     "pg": "^8.18.0",
     "prisma": "^6.19.2",
     "redis": "^5.11.0"

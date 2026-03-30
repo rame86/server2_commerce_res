@@ -1,7 +1,6 @@
 // src/messaging/listener/statusUpdateConsumer.js
 // 데이터베이스(Prisma), 캐시(Redis), 그리고 중앙 RabbitMQ 설정을 가져옴
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../config/prisma');
 const redis = require('../../config/redisClient');
 const { QUEUES, EXCHANGE, ROUTING_KEYS, getConnection } = require('../../config/rabbitMQ');
 
@@ -54,7 +53,7 @@ async function startStatusUpdateConsumer() {
                  */
 
                 // Case A: 환불 완료 처리
-                if (normalizedStatus === 'REFUNDED' || type === 'REFUND') {
+                if (normalizedStatus === 'REFUNDED') {
                     if (res.status !== 'REFUNDED') {
                         // DB 트랜잭션: 예약 상태를 환불로 바꾸고 DB 재고를 즉시 복구함
                         await prisma.$transaction(async (tx) => {

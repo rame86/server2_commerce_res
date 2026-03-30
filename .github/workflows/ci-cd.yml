@@ -3,6 +3,7 @@ name: Reservation Service CI/CD
 on:
   push:
     branches: [ master ]
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -11,39 +12,84 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 1. DockerHub 로그인
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 이미지 빌드 및 푸시
+      # 2. 이미지 빌드 및 푸시 (Reservation 전용)
       - name: Build and Push Docker Image
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/msa-reservation:latest .
-          docker push ${{ secrets.DOCKER_USERNAME }}/msa-reservation:latest
+          IMAGE_NAME=${{ secrets.DOCKER_USERNAME }}/msa-reservation
+          docker build -t $IMAGE_NAME:latest .
+          docker push $IMAGE_NAME:latest
 
-      # GCP Server 2 배포 (시크릿 이름 GCP_KEY로 수정)
+      # 3. GitHub Actions 러너의 공용 IP 가져오기
+      - name: Get Runner IP
+        id: ip
+        run: echo "ipv4=$(curl -s https://api.ipify.org)" >> $GITHUB_OUTPUT
+
+      # 4. GCP 인증 (SA Key 사용)
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # 5. gcloud SDK 설정
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # 6. SSH 포트 임시 허용 (러너 IP만 22번 포트 개방)
+      - name: Open Firewall for Deployment
+        run: |
+          gcloud compute firewall-rules create allow-ssh-reservation-${{ github.run_id }} \
+            --direction=INGRESS \
+            --priority=100 \
+            --action=ALLOW \
+            --rules=tcp:22 \
+            --source-ranges=${{ steps.ip.outputs.ipv4 }}/32 \
+            --description="Temporary SSH access for Reservation CI/CD"
+
+      # 7. GCP Server 2 배포 및 실행
       - name: Deploy to GCP Server 2
         uses: appleboy/ssh-action@master
         with:
-          host: 34.50.60.193
-          username: oksm1003
+          host: ${{ secrets.GCP_SERVER_2 }}
+          username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_KEY }}
-          # Deploy to GCP Server 2 단계의 script 부분 수정
           script: |
-            mkdir -p /home/oksm1003/reservation
-            cd /home/oksm1003/reservation
+            WORK_DIR="/home/${{ secrets.GCP_USER }}/reservation"
+            # 🌟 [추가됨] 이미지 저장용 외부 호스트 디렉토리 생성 및 권한 설정
+          
+            IMAGE_DIR="/home/${{ secrets.GCP_USER }}/images/res"
+            mkdir -p $WORK_DIR
+            mkdir -p $IMAGE_DIR
+            chmod -R 777 $IMAGE_DIR
+
+            cd $WORK_DIR
             
-            # 1. 환경 변수 파일 생성 (Secrets 이름을 실제 등록한 이름과 맞춰줘)
-            # DATABASE_URL 구성 시 POSTGRES_USER, POSTGRES_PASSWORD 사용
-            echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@34.158.208.117:5432/msa_res_db" > .env
+            # 네트워크 사전 구성
+            docker network inspect msa-network >/dev/null 2>&1 || docker network create msa-network
+
+            # .env 파일 완벽 동적 생성
+            cat <<EOF > .env
+            DATABASE_URL="postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.GCP_SERVER_1 }}:5432/msa_res_db?schema=res"
+            RABBITMQ_URL="amqp://${{ secrets.RABBITMQ_USER }}:${{ secrets.RABBITMQ_PASSWORD }}@${{ secrets.GCP_SERVER_1 }}:${{ secrets.RABBITMQ_PORT }}"
+            RABBITMQ_USER=${{ secrets.RABBITMQ_USER }}
+            RABBITMQ_PASSWORD=${{ secrets.RABBITMQ_PASSWORD }}
+            RABBITMQ_HOST=${{ secrets.GCP_SERVER_1 }}
+            RABBITMQ_PORT=${{ secrets.RABBITMQ_PORT }}
+            REDIS_HOST=${{ secrets.GCP_SERVER_1 }}
+            REDIS_PORT=${{ secrets.REDIS_PORT }}
+            PORT=8082
+            TZ=Asia/Seoul
+            KAKAO_REST_API_KEY=${{ secrets.KAKAO_PAY_SECRET_KEY }}
+            KAKAO_API_URL=https://dapi.kakao.com/v2/local/search/address.json
+            EOF
             
-            # RabbitMQ 정보 (별도 Secret이 없다면 일단 직접 입력하거나 Secret 추가 후 수정)
-            echo "RABBITMQ_URL=amqp://msa_mq:mq1234@34.158.208.117:5672" >> .env
-            echo "PORT=8082" >> .env
-            
-            # 2. docker-compose.yml 생성 (기존과 동일)
+            # docker-compose.yml 생성
             cat <<EOF > docker-compose.yml
             services:
               reservation:
@@ -53,6 +99,9 @@ jobs:
                 ports:
                   - "8082:8082"
                 env_file: .env
+                # 🌟 [핵심] 외부 볼륨 마운트 설정 추가!
+                volumes:
+                  - $IMAGE_DIR:/app/public/images/res
                 networks:
                   - msa-network
 
@@ -61,7 +110,13 @@ jobs:
                 external: true
             EOF
             
-            # 3. 실행
+            # 컨테이너 실행 및 정리
             docker compose pull
-            docker compose up -d
+            docker compose up -d --force-recreate
             docker image prune -f
+
+      # 8. 방화벽 규칙 삭제 (실패 여부 상관없이 무조건 실행하여 보안 유지)
+      - name: Close Firewall
+        if: always()
+        run: |
+          gcloud compute firewall-rules delete allow-ssh-reservation-${{ github.run_id }} --quiet

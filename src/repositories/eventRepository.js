@@ -1,45 +1,17 @@
-// src/repositories/eventRepository.js
-
 /**
  * FanVerse - Event Repository Layer
  * 담당: Prisma를 이용한 공연 관련 PostgreSQL(Server 1) 데이터 제어
  */
 
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../config/prisma');
 
-/**
- * [Prisma 인스턴스 초기화]
- * 환경 변수(DATABASE_URL)를 명시적으로 데이터소스에 주입하여
- * PostgreSQL 서버와의 연결 풀(Pool)을 생성함.
- */
-const prisma = new PrismaClient({
-  datasources: {
-    db: {
-      url: process.env.DATABASE_URL, 
-    },
-  },
-});
-
-/**
- * [추가: Redis Warm-up용 DB 재고 조회]
- */
+// [1] Redis Warm-up용 DB 재고 조회
 exports.getEventStock = async (eventId) => {
     try {
-        /**
-         * [특정 필드 추출 쿼리]
-         * findUnique를 사용하여 특정 공연을 식별하고, 'select' 옵션을 통해 
-         * 불필요한 필드를 제외한 'available_seats(잔여 좌석)' 정보만 네트워크를 통해 가져옴 (최적화).
-         */
         const targetEvent = await prisma.events.findUnique({
             where: { event_id: parseInt(eventId, 10) },
             select: { available_seats: true }
         });
-
-        // 핵심 주석: Prisma events 모델을 통해 재고 조회 수행
-        /**
-         * [결과 반환 및 가공]
-         * 조회 결과가 있으면 좌석 수를 반환하고, 공연 자체가 존재하지 않으면 안전하게 0을 반환함.
-         */
         return targetEvent ? targetEvent.available_seats : 0;
     } catch (err) {
         console.error("❌ [getEventStock Error]:", err.message);
@@ -47,110 +19,177 @@ exports.getEventStock = async (eventId) => {
     }
 };
 
-/**
- * [특정 공연 조회]
- */
+// [2] 특정 공연 조회 (승인된 것만)
 exports.findEventById = async (eventId) => {
-    /**
-     * [단일 엔티티 조회]
-     * 서비스 계층에서 티켓 가격 계산이나 유효성 검증을 할 때 필요한 모든 공연 정보를
-     * PK(Primary Key)인 event_id를 기준으로 정확히 한 건만 추출함.
-     */
     return await prisma.events.findUnique({
         where: { 
             event_id: parseInt(eventId, 10),
-            // 🌟 상세 조회 시에도 승인된 건인지 확인하고 싶다면 아래 주석 해제 (단, findFirst 사용 권장)
             approval_status: 'CONFIRMED' 
         }
     });
 };
 
-/**
- * [공연 목록 조회]
- */
+// [3] 승인된 모든 공연 목록 조회 (유저용)
 exports.findAllEvents = async () => {
-    try {
-        /**
-         * [관계형 데이터 통합 조회 - Eager Loading]
-         * findMany를 통해 전체 공연 목록을 가져오되, 'include' 옵션을 사용하여 
-         * 자식 테이블인 'event_locations(장소)'와 'event_images(이미지)' 데이터를 
-         * 한 번의 쿼리로 묶어 가져옴 (JOIN 수행).
-         */
-        return await prisma.events.findMany({ 
-            // 🌟 [필터] 승인 완료(CONFIRMED)된 공연만 사용자에게 보여줌
-            where: {
-                approval_status: 'CONFIRMED'
+    return await prisma.events.findMany({ 
+        where: { approval_status: 'CONFIRMED' }, // 무조건 승인된 것만
+        include: {
+            event_locations: true,
+            event_images: true,
+            reservations: {
+                where: { status: 'CONFIRMED' },
+                select: { ticket_count: true }
+            }
+        },
+        orderBy: { event_date: 'asc' }
+    });
+};
+
+// [4] 아티스트 본인 공연 조회 (상태 상관없음)
+exports.findArtistEvents = async (artistId) => {
+    return await prisma.events.findMany({ 
+        where: { artist_id: BigInt(artistId) },
+        include: {
+            event_locations: true,
+            event_images: true,
+            // 🌟 반려 사유를 가져오기 위해 이 부분을 추가해!
+            event_approvals_events_approval_idToevent_approvals: {
+                select: {
+                    rejection_reason: true
+                }
             },
-            include: {
-                event_locations: true,
-                event_images: true // 사진 정보도 한꺼번에 가져오기!
-            },
-            /**
-             * [정렬 조건 적용]
-             * 공연 날짜(event_date)를 기준으로 오름차순(asc) 정렬하여 
-             * 사용자가 날짜순으로 공연을 볼 수 있게 함.
-             */
-            orderBy: { event_date: 'asc' }
+            reservations: {
+                where: { status: 'CONFIRMED' },
+                select: { 
+                    ticket_count: true, 
+                    selected_seats: true // 🌟 실제 DB 컬럼명으로 수정!
+                }
+            }
+        },
+        orderBy: { created_at: 'desc' }
+    });
+};
+
+// [5] 🌟 새로운 공연 등록 (파일/URL 둘 다 대응)
+exports.createEventRequest = async (data) => {
+    return await prisma.$transaction(async (tx) => {
+        // BigInt 안전 변환
+        const artistId = (data.artist_id && data.artist_id !== "") ? BigInt(data.artist_id) : BigInt(0);
+        const requesterId = (data.requester_id && data.requester_id !== "") ? BigInt(data.requester_id) : artistId;
+
+        // 1. events 생성
+        const newEvent = await tx.events.create({
+            data: {
+                title: data.title || "제목 없음",
+                artist_id: artistId,
+                artist_name: data.artist_name || "Unknown Artist",
+                event_type: data.event_type || "CONCERT",
+                description: data.description,
+                price: parseInt(data.price, 10) || 0,
+                total_capacity: parseInt(data.total_capacity, 10) || 0,
+                available_seats: parseInt(data.total_capacity, 10) || 0,
+                event_date: new Date(data.event_date),
+                open_time: new Date(data.open_time),
+                close_time: new Date(data.close_time),
+                approval_status: 'PENDING'
+            }
         });
-    } catch (err) {
-        console.error("❌ Repository findAllEvents 에러:", err);
-        throw err;
-    }
-};
 
+        // 2. event_locations (필드명: venue)
+        await tx.event_locations.create({
+            data: {
+                event_id: newEvent.event_id,
+                venue: data.venue || "장소 미정",
+                address: data.address || "",
+                latitude: parseFloat(data.lat) || 0,
+                longitude: parseFloat(data.lng) || 0
+            }
+        });
 
-/**
- * [승인 대기열 조회]
- */
-exports.findApprovalById = async (eventId) => {
-    if (!eventId) {
-        throw new Error("eventId(approvalId)가 전달되지 않았어!");
-    }
-
-    // 🌟 findUnique는 PK로만 찾을 수 있어서, event_id로 찾으려면 findFirst를 써야 해!
-    return await prisma.event_approvals.findFirst({
-        where: {
-            event_id: parseInt(eventId, 10) // Spring에서 온 approvalId를 event_id에 매칭
+        // 3. event_images (image_role: POSTER)
+        if (data.image_url) {
+            await tx.event_images.create({
+                data: {
+                    event_id: newEvent.event_id,
+                    image_url: data.image_url,
+                    image_role: 'POSTER'
+                }
+            });
         }
+
+        // 4. event_approvals (🌟 필수 Json 필드 snapshot 추가)
+        await tx.event_approvals.create({
+            data: {
+                event_id: newEvent.event_id,
+                requester_id: requesterId,
+                status: 'PENDING',
+                event_snapshot: { title: data.title, price: data.price, venue: data.venue } // 🌟 필수!
+            }
+        });
+
+        return newEvent;
     });
 };
 
-/**
- * [승인 데이터 최종 확정 (상태 업데이트)]
- */
+// [6] 공연 승인
 exports.confirmEvent = async (tx, eventId, adminId) => {
-    // 1. events 테이블 승인
-    await tx.events.update({
-        where: { event_id: Number(eventId) },
-        data: { approval_status: 'CONFIRMED' }
-    });
+    if (!eventId) throw new Error("eventId가 유효하지 않습니다.");
 
-    // 2. event_approvals 테이블 승인 (event_id 기준으로 찾아서 업데이트)
     await tx.event_approvals.updateMany({
         where: { event_id: Number(eventId) },
         data: { 
             status: 'CONFIRMED', 
-            admin_id: adminId ? BigInt(adminId) : null,
+            // 💡 [방어 코드] admin_id가 undefined/null인 경우 BigInt 에러 방지
+            admin_id: (adminId !== undefined && adminId !== null) ? BigInt(adminId) : null,
             processed_at: new Date()
         }
     });
+
+    return await tx.events.update({
+        where: { event_id: Number(eventId) },
+        data: { approval_status: 'CONFIRMED' }
+    });
 };
 
+// [7] 공연 반려
 exports.rejectEvent = async (tx, eventId, adminId, reason) => {
-    // 1. events 테이블 반려
-    await tx.events.update({
-        where: { event_id: Number(eventId) },
-        data: { approval_status: 'FAILED' }
-    });
+    if (!eventId) throw new Error("eventId가 유효하지 않습니다.");
 
-    // 2. event_approvals 테이블 반려 (event_id 기준)
     await tx.event_approvals.updateMany({
         where: { event_id: Number(eventId) },
         data: { 
             status: 'FAILED', 
             rejection_reason: reason,
-            admin_id: adminId ? BigInt(adminId) : null,
+            // 💡 [방어 코드] admin_id 안전하게 처리
+            admin_id: (adminId !== undefined && adminId !== null) ? BigInt(adminId) : null,
             processed_at: new Date()
+        }
+    });
+
+    return await tx.events.update({
+        where: { event_id: Number(eventId) },
+        data: { approval_status: 'FAILED' }
+    });
+};
+
+// [8] 정산 정책 조회
+exports.getFeePolicy = async (eventId) => {
+    return await prisma.event_fee_policies.findUnique({
+        where: { event_id: parseInt(eventId, 10) }
+    });
+};
+
+// [9] 유저 대시보드 [내 예매 내역 조회]
+exports.findConfirmedReservationsByUserId = async (userId) => {
+    return await prisma.reservations.findMany({
+        where: {
+            user_id: BigInt(userId),
+            status: 'CONFIRMED'
+        },
+        include: {
+            events: {
+                include: { event_locations: true }
+            }
         }
     });
 };

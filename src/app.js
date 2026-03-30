@@ -9,6 +9,7 @@ const { connectRabbitMQ } = require('./config/rabbitMQ'); // MQ 연결 함수 �
 // [1] 앱 초기화 및 기본 설정
 const app = express();
 const PORT = process.env.PORT || 8082; // 환경 변수가 없으면 기본 8082 포트 사용
+const path = require('path');
 
 /**
  * [2] 인프라 연결 설정 (Redis)
@@ -22,6 +23,15 @@ app.use(morgan('dev')); // [디버깅] 클라이언트의 요청(Method, URL, �
 app.use(cors());        // [보안] 다른 도메인(프론트엔드 등)에서의 자원 요청을 허용함
 app.use(express.json()); // [파싱] HTTP 요청 바디의 JSON 데이터를 JS 객체로 변환함
 app.use(express.urlencoded({ extended: true })); // [파싱] 폼 데이터 등 URL 인코딩된 바디를 해석함
+
+
+//  🌟 [핵심 수정] 정적 파일 제공 경로 동적 매핑
+//  저장할 때(resRoutes.js)와 동일하게, 환경에 따라 실제 파일이 있는 폴더를 바라보게 함
+const staticPath = process.platform === 'win32' 
+    ? path.join(process.cwd(), 'uploads') 
+    : (process.env.UPLOAD_DIR || '/app/public/images/res');
+
+app.use('/images/res', express.static(staticPath));
 
 /**
  * [4] 라우터 연결 (🚨 404 발생 주의 구역)
@@ -70,6 +80,8 @@ const startConsumer = require('./messaging/listener/consumer');
 const startCancelConsumer = require('./messaging/listener/cancelConsumer');
 const startStatusUpdateConsumer = require('./messaging/listener/statusUpdateConsumer');
 const startEventResponseConsumer = require('./messaging/listener/eventResponseConsumer');
+const startRefundResponseConsumer = require('./messaging/listener/refundResponseConsumer'); // 🌟 [추가] 환불 승인 리스너
+const startDashboardConsumer = require('./messaging/listener/dashboardConsumer');
 
 /**
  * [서버 리스닝 및 초기화 프로세스]
@@ -93,6 +105,10 @@ app.listen(PORT, async () => {
         await startStatusUpdateConsumer();
         // 🌟 공연 승인 결과 처리 컨슈머 실행
         await startEventResponseConsumer();
+        // 🌟 [추가] 환불 승인 결과 처리 컨슈머 실행
+        await startRefundResponseConsumer();
+        // 대시보드 컨슈머 시작
+        await startDashboardConsumer();
 
         console.log("✅ [Messaging] 모든 RabbitMQ 컨슈머 연결 성공");
 
@@ -101,7 +117,15 @@ app.listen(PORT, async () => {
          * 티켓팅 오픈 전 DB의 최신 재고 데이터를 Redis로 미리 로드하여 
          * 첫 요청부터 초고속 선착순 처리가 가능하게 준비함.
          */
-        await eventService.warmupAllEventsToRedis();
+        setTimeout(async () => {
+            try {
+                console.log("🔄 [Warm-up] Starting Redis Warm-up...");
+                await eventService.warmupAllEventsToRedis();
+                console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
+            } catch (err) {
+                console.error("❌ [Warm-up Error] 초기화 중 오류 발생:", err.message);
+            }
+        }, 2000);
         
         console.log(`✅ [Warm-up] 모든 이벤트 재고 Redis 동기화 완료`);
 

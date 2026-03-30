@@ -1,7 +1,6 @@
 // testController.js
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/prisma');
 const resService = require('../services/resService');
 const redis = require('../config/redisClient'); // Redis 연결 설정
 const amqp = require('amqplib'); // RabbitMQ 연결 설정
